@@ -1,0 +1,27 @@
+{
+  "name": "devops-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP Server for DevOps Observability - Kubernetes, Prometheus, Loki",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch index.ts"
+  },
+  "dependencies": {
+    "@kubernetes/client-node": "1.4.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "axios": "1.16.1",
+    "dotenv": "16.5.0",
+    "express": "5.2.1",
+    "winston": "3.17.0",
+    "zod": "3.25.28"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.6",
+    "@types/node": "25.9.1",
+    "tsx": "4.22.3",
+    "typescript": "6.0.3"
+  }
+}
