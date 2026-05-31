@@ -133,12 +133,13 @@ const tools: Tool[] = [
   },
   {
     name: "k8s_list_events",
-    description: "List events in a namespace",
+    description: "List events in a namespace, optionally filtered by time",
     inputSchema: {
       type: "object",
       properties: {
         namespace: { type: "string", description: "Namespace (default: default)" },
         field_selector: { type: "string", description: "Field selector (e.g. involvedObject.name=my-pod)" },
+        since_minutes: { type: "number", description: "Only return events from the last N minutes (optional)" },
       },
     },
     handler: h.listEvents,
