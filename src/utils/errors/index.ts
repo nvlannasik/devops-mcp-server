@@ -31,6 +31,7 @@ export async function withUpstream<T>(
   try {
     return await fn();
   } catch (err) {
-    throw new UpstreamError(label, service, err);
+    const cause = err instanceof Error ? err.message : String(err);
+    throw new UpstreamError(`${label}: ${cause}`, service, err);
   }
 }

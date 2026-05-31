@@ -16,7 +16,7 @@ function getKubeConfig(): k8s.KubeConfig {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const getApi = <T>(ApiClass: new (...args: any[]) => T): T =>
+export const getApi = <T extends k8s.ApiType>(ApiClass: new (...args: any[]) => T): T =>
   getKubeConfig().makeApiClient(ApiClass);
 
 export { k8s };
