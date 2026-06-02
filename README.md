@@ -12,18 +12,17 @@ MCP Server for DevOps Observability — integrates with Kubernetes, Prometheus, 
 cp .env.example .env
 # Edit .env with your config
 npm install
-npm run dev       # development (tsx watch)
-npm run build     # compile TypeScript
-npm start         # run compiled output
+npm run dev                    # development (tsx watch)
+npm run build && npm start     # production
 ```
 
 ## Configuration
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `NODE_ENV` | Environment: `dev`, `staging`, `prod` | `dev` |
+| `NODE_ENV` | `dev` / `staging` / `prod` | `dev` |
 | `TRANSPORT` | `stdio` or `http` | `stdio` |
-| `PORT` | HTTP port (http mode only) | `3000` |
+| `PORT` | HTTP port | `3000` |
 | `K8S_AUTH_MODE` | `kubeconfig` or `incluster` | `kubeconfig` (dev), `incluster` (staging/prod) |
 | `K8S_KUBECONFIG_PATH` | Path to kubeconfig file | `~/.kube/config` |
 | `K8S_API_SERVER` | Kubernetes API server URL | — |
@@ -56,11 +55,11 @@ npm start         # run compiled output
 | `k8s_list_hpas` | List HorizontalPodAutoscalers |
 | `k8s_list_pvcs` | List PersistentVolumeClaims |
 | `k8s_list_resource_quotas` | List ResourceQuotas (hard vs used) |
-| `k8s_list_events` | List events (filter by field selector) |
+| `k8s_list_events` | List events — supports `since_minutes` filter |
 | `k8s_list_crds` | List CustomResourceDefinitions |
 | `k8s_list_service_accounts` | List ServiceAccounts |
 | `k8s_list_configmaps` | List ConfigMaps with keys and data |
-| `k8s_list_secrets` | List Secrets (name and type only, values not exposed) |
+| `k8s_list_secrets` | List Secrets (name and type only, values never exposed) |
 
 ### Prometheus (7)
 
@@ -89,10 +88,8 @@ npm start         # run compiled output
 
 ```
 src/
-├── app/
-│   └── index.ts              # MCP server setup and tool registration
-├── config/
-│   └── index.ts              # Multi-env config (dev/staging/prod)
+├── app/index.ts              # MCP server setup, tool registration, HTTP/stdio transport
+├── config/index.ts           # Multi-env config (dev/staging/prod)
 ├── tools/
 │   ├── index.ts              # Tool aggregator
 │   ├── types.ts              # Shared Tool interface
@@ -100,21 +97,7 @@ src/
 │   │   ├── client.ts         # KubeConfig singleton
 │   │   ├── schemas.ts        # Shared zod schemas (NS, NSLabel, NSField)
 │   │   ├── index.ts          # Tool definitions
-│   │   └── handlers/
-│   │       ├── index.ts      # Re-export all handlers
-│   │       ├── namespaces.ts
-│   │       ├── nodes.ts
-│   │       ├── pods.ts
-│   │       ├── workloads.ts  # Deployments, StatefulSets, DaemonSets
-│   │       ├── batch.ts      # Jobs, CronJobs
-│   │       ├── networking.ts # Services, Ingresses
-│   │       ├── autoscaling.ts
-│   │       ├── storage.ts
-│   │       ├── quotas.ts
-│   │       ├── events.ts
-│   │       ├── crds.ts
-│   │       ├── serviceaccounts.ts
-│   │       └── configs.ts    # ConfigMaps, Secrets
+│   │   └── handlers/         # Per-domain handler files
 │   ├── prometheus/
 │   │   ├── client.ts
 │   │   ├── handlers.ts
@@ -124,17 +107,13 @@ src/
 │       ├── handlers.ts
 │       └── index.ts
 └── utils/
-    ├── errors/
-    │   └── index.ts          # Error classes + withUpstream() helper
-    ├── http/
-    │   └── index.ts          # createHttpClient with optional basic auth
-    ├── loki/
-    │   └── index.ts          # parseStreams helper
-    └── logger/
-        └── log.ts            # Winston logger
+    ├── errors/index.ts       # Error classes + withUpstream() helper
+    ├── http/index.ts         # createHttpClient with optional basic auth
+    ├── loki/index.ts         # parseStreams helper
+    └── logger/log.ts         # Winston logger
 ```
 
-## MCP Config
+## Transport Modes
 
 ### stdio (default — local AI clients)
 ```json
@@ -155,8 +134,8 @@ TRANSPORT=http PORT=3000 NODE_ENV=prod node dist/index.js
 ```
 
 Endpoints:
-- `POST /mcp` — MCP protocol endpoint
-- `GET /health` — Health check (`{ status: "ok", tools: 32 }`)
+- `POST /mcp` — MCP protocol endpoint (stateless, new server instance per request)
+- `GET /health` — Health check
 
 ```json
 {
@@ -176,8 +155,22 @@ docker build -t devops-mcp-server .
 
 # Run
 docker run -p 3000:3000 \
+  -e TRANSPORT=http \
   -e K8S_AUTH_MODE=incluster \
   -e PROMETHEUS_URL=http://prometheus:9090 \
   -e LOKI_URL=http://loki:3100 \
   devops-mcp-server
 ```
+
+## In-Cluster Deployment (Kubernetes)
+
+When deployed inside the same cluster, only these env vars are needed:
+
+```bash
+NODE_ENV=prod
+TRANSPORT=http
+PROMETHEUS_URL=http://prometheus.monitoring.svc.cluster.local:9090
+LOKI_URL=http://loki.monitoring.svc.cluster.local:3100
+```
+
+`K8S_AUTH_MODE` defaults to `incluster` in prod — credentials are auto-injected by Kubernetes. Requires a ServiceAccount with ClusterRole (`get`/`list` on all resources).
