@@ -38,7 +38,7 @@ const devFormat = winston.format.combine(
 const prodFormat = structuredFormat;
 
 const logger = winston.createLogger({
-  level: isDev ? "debug" : "info",
+  level: process.env.LOG_LEVEL ?? (isDev ? "debug" : "info"),
   levels,
   transports: [
     // Console: all levels in dev, info+ in prod

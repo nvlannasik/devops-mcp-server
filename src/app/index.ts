@@ -1,3 +1,4 @@
+import { createServer, type Server } from "http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -29,6 +30,7 @@ function jsonSchemaToZod(schema: InputSchema): Record<string, ZodTypeAny> {
 
 export default class AppServer {
   private server: McpServer;
+  private httpServer: Server | null = null;
 
   constructor() {
     this.server = new McpServer({ name: "devops-mcp-server", version: "1.0.0" });
@@ -169,12 +171,25 @@ export default class AppServer {
       res.json({ status: "ok", tools: allTools.length });
     });
 
-    app.listen(port, () => {
-      logWithContext("info", "MCP Server started in HTTP mode", {
-        transport: "http",
-        port,
-        endpoint: `http://0.0.0.0:${port}/mcp`,
+    await new Promise<void>((resolve, reject) => {
+      this.httpServer = createServer(app);
+      this.httpServer.listen(port, () => {
+        logWithContext("info", "MCP Server started in HTTP mode", {
+          transport: "http",
+          port,
+          endpoint: `http://0.0.0.0:${port}/mcp`,
+        });
+        resolve();
       });
+      this.httpServer.once("error", reject);
     });
+  }
+
+  async stop(): Promise<void> {
+    await new Promise<void>((resolve) => {
+      if (!this.httpServer) { resolve(); return; }
+      this.httpServer.close(() => resolve());
+    });
+    logWithContext("info", "MCP Server stopped", {});
   }
 }

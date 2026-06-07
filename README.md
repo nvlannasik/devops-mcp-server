@@ -10,7 +10,6 @@ MCP Server for DevOps Observability — integrates with Kubernetes, Prometheus, 
 
 ```bash
 cp .env.example .env
-# Edit .env with your config
 npm install
 npm run dev                    # development (tsx watch)
 npm run build && npm start     # production
@@ -20,20 +19,19 @@ npm run build && npm start     # production
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `NODE_ENV` | `dev` / `staging` / `prod` | `dev` |
 | `TRANSPORT` | `stdio` or `http` | `stdio` |
 | `PORT` | HTTP port | `3000` |
-| `K8S_AUTH_MODE` | `kubeconfig` or `incluster` | `kubeconfig` (dev), `incluster` (staging/prod) |
-| `K8S_KUBECONFIG_PATH` | Path to kubeconfig file | `~/.kube/config` |
+| `K8S_AUTH_MODE` | `kubeconfig` or `incluster` | `kubeconfig` |
+| `K8S_KUBECONFIG_PATH` | Path to kubeconfig | `~/.kube/config` |
 | `K8S_API_SERVER` | Kubernetes API server URL | — |
 | `K8S_TOKEN` | Service account token | — |
-| `K8S_CA_CERT_PATH` | CA certificate path | — |
-| `PROMETHEUS_URL` | Prometheus base URL | `http://localhost:9090` (dev) |
-| `PROMETHEUS_USERNAME` | Basic auth username (optional) | — |
-| `PROMETHEUS_PASSWORD` | Basic auth password (optional) | — |
-| `LOKI_URL` | Loki base URL | `http://localhost:3100` (dev) |
-| `LOKI_USERNAME` | Basic auth username (optional) | — |
-| `LOKI_PASSWORD` | Basic auth password (optional) | — |
+| `PROMETHEUS_URL` | Prometheus base URL | `http://localhost:9090` |
+| `PROMETHEUS_USERNAME` | Basic auth (optional) | — |
+| `PROMETHEUS_PASSWORD` | Basic auth (optional) | — |
+| `LOKI_URL` | Loki base URL | `http://localhost:3100` |
+| `LOKI_USERNAME` | Basic auth (optional) | — |
+| `LOKI_PASSWORD` | Basic auth (optional) | — |
+| `LOG_LEVEL` | `error\|warn\|info\|http\|debug` | `debug` (dev), `info` (prod) |
 
 ## Tools (32)
 
@@ -70,8 +68,8 @@ npm run build && npm start     # production
 | `prometheus_get_alerts` | Active alerts |
 | `prometheus_get_targets` | Scrape targets health |
 | `prometheus_get_rules` | Alerting and recording rules |
-| `prometheus_get_metadata` | Metric metadata (type, unit, help text) |
-| `prometheus_list_metric_names` | List all available metric names |
+| `prometheus_get_metadata` | Metric metadata |
+| `prometheus_list_metric_names` | List all metric names |
 
 ### Loki (6)
 
@@ -82,67 +80,46 @@ npm run build && npm start     # production
 | `loki_get_labels` | List label names |
 | `loki_get_label_values` | List values for a label |
 | `loki_get_streams` | List active log streams |
-| `loki_get_stats` | Ingestion statistics for a stream |
+| `loki_get_stats` | Ingestion statistics |
 
 ## Project Structure
 
 ```
 src/
-├── app/index.ts              # MCP server setup, tool registration, HTTP/stdio transport
-├── config/index.ts           # Multi-env config (dev/staging/prod)
+├── app/index.ts              # McpServer, HTTP/stdio transport, graceful shutdown
+├── config/index.ts           # Flat env-var config (no env-conditional logic)
 ├── tools/
-│   ├── index.ts              # Tool aggregator
-│   ├── types.ts              # Shared Tool interface
 │   ├── kubernetes/
-│   │   ├── client.ts         # KubeConfig singleton
-│   │   ├── schemas.ts        # Shared zod schemas (NS, NSLabel, NSField)
-│   │   ├── index.ts          # Tool definitions
-│   │   └── handlers/         # Per-domain handler files
+│   │   ├── client.ts, schemas.ts, index.ts
+│   │   └── handlers/         # Per-domain: namespaces, nodes, pods, workloads...
 │   ├── prometheus/
-│   │   ├── client.ts
-│   │   ├── handlers.ts
-│   │   └── index.ts
 │   └── loki/
-│       ├── client.ts
-│       ├── handlers.ts
-│       └── index.ts
 └── utils/
-    ├── errors/index.ts       # Error classes + withUpstream() helper
-    ├── http/index.ts         # createHttpClient with optional basic auth
-    ├── loki/index.ts         # parseStreams helper
-    └── logger/log.ts         # Winston logger
+    ├── errors/index.ts       # withUpstream() helper
+    ├── http/index.ts         # createHttpClient()
+    ├── loki/index.ts         # parseStreams()
+    └── logger/log.ts         # Winston + logWithContext()
 ```
 
-## Transport Modes
+## MCP Client Config
 
-### stdio (default — local AI clients)
+### stdio
 ```json
 {
   "mcpServers": {
     "devops": {
       "command": "node",
-      "args": ["/path/to/devops-mcp-server/dist/index.js"],
-      "env": { "NODE_ENV": "dev" }
+      "args": ["/path/to/devops-mcp-server/dist/index.js"]
     }
   }
 }
 ```
 
-### HTTP (remote deployment)
-```bash
-TRANSPORT=http PORT=3000 NODE_ENV=prod node dist/index.js
-```
-
-Endpoints:
-- `POST /mcp` — MCP protocol endpoint (stateless, new server instance per request)
-- `GET /health` — Health check
-
+### HTTP
 ```json
 {
   "mcpServers": {
-    "devops": {
-      "url": "https://your-domain.com/mcp"
-    }
+    "devops": { "url": "https://your-domain.com/mcp" }
   }
 }
 ```
@@ -150,10 +127,8 @@ Endpoints:
 ## Docker
 
 ```bash
-# Build
 docker build -t devops-mcp-server .
 
-# Run
 docker run -p 3000:3000 \
   -e TRANSPORT=http \
   -e K8S_AUTH_MODE=incluster \
@@ -162,15 +137,13 @@ docker run -p 3000:3000 \
   devops-mcp-server
 ```
 
-## In-Cluster Deployment (Kubernetes)
-
-When deployed inside the same cluster, only these env vars are needed:
+## In-Cluster Deployment
 
 ```bash
-NODE_ENV=prod
 TRANSPORT=http
+K8S_AUTH_MODE=incluster
 PROMETHEUS_URL=http://prometheus.monitoring.svc.cluster.local:9090
 LOKI_URL=http://loki.monitoring.svc.cluster.local:3100
 ```
 
-`K8S_AUTH_MODE` defaults to `incluster` in prod — credentials are auto-injected by Kubernetes. Requires a ServiceAccount with ClusterRole (`get`/`list` on all resources).
+Requires a ServiceAccount with ClusterRole (`get`/`list` on all resources).
