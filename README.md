@@ -13,7 +13,12 @@ cp .env.example .env
 npm install
 npm run dev                    # development (tsx watch)
 npm run build && npm start     # production
+npm test                       # unit tests
 ```
+
+## Testing
+
+`npm test` runs `node --import tsx --test 'src/**/*.test.ts'` — Node's built-in test runner (Node >= 24), no extra dependencies. Test files (`*.test.ts`) are excluded from the production build. Current coverage: the `withTimeout` upstream-timeout helper.
 
 ## Configuration
 
@@ -31,6 +36,8 @@ npm run build && npm start     # production
 | `LOKI_URL` | Loki base URL | `http://localhost:3100` |
 | `LOKI_USERNAME` | Basic auth (optional) | — |
 | `LOKI_PASSWORD` | Basic auth (optional) | — |
+| `UPSTREAM_TIMEOUT_SECONDS` | Max wait on any upstream (K8s/Prometheus/Loki) before failing the tool | `30` |
+| `K8S_LIST_LIMIT` | Cap on items returned by namespaced list tools (pods/events/configmaps/secrets) | `100` |
 | `LOG_LEVEL` | `error\|warn\|info\|http\|debug` | `debug` (dev), `info` (prod) |
 
 ## Tools (32)

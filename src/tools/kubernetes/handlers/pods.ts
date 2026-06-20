@@ -2,11 +2,19 @@ import { z } from "zod";
 import { getApi, k8s } from "../client.js";
 import { withUpstream } from "../../../utils/errors/index.js";
 import { NS, NSLabel } from "../schemas.js";
+import config from "../../../config/index.js";
+
+const LIST_TIMEOUT_SEC = Math.ceil(config.upstreamTimeoutMs / 1000);
 
 export const listPods = (input: unknown) => {
   const { namespace, label_selector } = NSLabel.parse(input);
   return withUpstream("kubernetes", "Failed to list pods", async () => {
-    const res = await getApi(k8s.CoreV1Api).listNamespacedPod({ namespace, labelSelector: label_selector });
+    const res = await getApi(k8s.CoreV1Api).listNamespacedPod({
+      namespace,
+      labelSelector: label_selector,
+      limit: config.k8sListLimit,
+      timeoutSeconds: LIST_TIMEOUT_SEC,
+    });
     return res.items.map((pod) => ({
       name: pod.metadata!.name,
       namespace: pod.metadata!.namespace,
