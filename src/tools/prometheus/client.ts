@@ -7,7 +7,7 @@ let _client: AxiosInstance | null = null;
 export function getClient(): AxiosInstance {
   if (!_client) {
     const { url, username, password } = config.prometheus;
-    _client = createHttpClient(url, username ? { username, password } : undefined);
+    _client = createHttpClient(url, username ? { username, password } : undefined, config.upstreamTimeoutMs);
   }
   return _client;
 }

@@ -7,6 +7,12 @@ import express, { type Request, type Response } from "express";
 import crypto from "crypto";
 import logger, { logWithContext } from "../utils/logger/log.js";
 import allTools from "../tools/index.js";
+import config from "../config/index.js";
+import { withTimeout } from "../utils/timeout/index.js";
+
+// hard ceiling per tool call — sits just above the upstream HTTP/K8s timeouts so
+// their specific errors surface first, but still bounds anything that ignores them
+const TOOL_HANDLER_TIMEOUT_MS = config.upstreamTimeoutMs + 5000;
 
 type PropSchema = { type?: string; enum?: string[]; description?: string };
 type InputSchema = { properties?: Record<string, PropSchema>; required?: string[] };
@@ -60,7 +66,7 @@ export default class AppServer {
         });
 
         try {
-          const result = await tool.handler(args);
+          const result = await withTimeout(tool.handler(args), TOOL_HANDLER_TIMEOUT_MS, `tool ${tool.name}`);
           const duration = Date.now() - start;
           const resultStr = JSON.stringify(result);
           const resultSize = Buffer.byteLength(resultStr, "utf8");

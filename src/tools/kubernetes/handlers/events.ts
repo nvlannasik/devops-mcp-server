@@ -2,6 +2,7 @@ import { z } from "zod";
 import { getApi, k8s } from "../client.js";
 import { withUpstream } from "../../../utils/errors/index.js";
 import { NSField } from "../schemas.js";
+import config from "../../../config/index.js";
 
 const EventInput = NSField.extend({
   since_minutes: z.number().int().positive().optional(),
@@ -10,7 +11,12 @@ const EventInput = NSField.extend({
 export const listEvents = (input: unknown) => {
   const { namespace, field_selector, since_minutes } = EventInput.parse(input);
   return withUpstream("kubernetes", "Failed to list events", async () => {
-    const res = await getApi(k8s.CoreV1Api).listNamespacedEvent({ namespace, fieldSelector: field_selector });
+    const res = await getApi(k8s.CoreV1Api).listNamespacedEvent({
+      namespace,
+      fieldSelector: field_selector,
+      limit: config.k8sListLimit,
+      timeoutSeconds: Math.ceil(config.upstreamTimeoutMs / 1000),
+    });
     const cutoff = since_minutes ? new Date(Date.now() - since_minutes * 60 * 1000) : null;
 
     return res.items

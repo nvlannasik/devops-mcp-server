@@ -55,6 +55,19 @@ Handlers split per domain under `src/tools/kubernetes/handlers/`:
 ### withUpstream helper
 All handlers use `withUpstream(service, label, fn)` from `src/utils/errors/index.ts` to wrap try/catch — eliminates duplicated error handling.
 
+### Timeouts & List Limits
+- `UPSTREAM_TIMEOUT_SECONDS` (default 30, converted to ms in config) bounds every upstream call:
+  - Prometheus/Loki: passed as axios `timeout` in `createHttpClient()`
+  - K8s list calls: passed as `timeoutSeconds` (server-side)
+  - **Universal net:** `app/index.ts` wraps every `tool.handler(args)` in `withTimeout()` (`src/utils/timeout/index.ts`) at the upstream timeout + 5s — catches anything that ignores its own timeout (e.g. pod logs, which have no server-side timeout)
+- `K8S_LIST_LIMIT` (default 100) caps namespaced list responses (`pods`, `events`, `configmaps`, `secrets`) via the K8s `limit` param — a huge namespace used to return a response so large the agent truncated it to 8000 chars and fed the LLM broken JSON. Same pattern can be extended to the remaining list tools.
+- **Why timeouts matter:** axios and the K8s client default to NO timeout — a hung (not errored) upstream would block the tool call, and the agent awaiting it, indefinitely.
+
+### Testing
+- `npm test` → `node --import tsx --test 'src/**/*.test.ts'` (Node >= 24 built-in runner + tsx, zero new deps)
+- `*.test.ts` excluded from the `tsc` build so `dist/` stays clean
+- Covered so far: `withTimeout` / `TimeoutError`
+
 ### Shared Schemas (Kubernetes)
 `src/tools/kubernetes/schemas.ts` exports `NS`, `NSLabel`, `NSField` — zod schemas reused across handlers.
 
