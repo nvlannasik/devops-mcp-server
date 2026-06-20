@@ -1,11 +1,18 @@
 import { getApi, k8s } from "../client.js";
 import { withUpstream } from "../../../utils/errors/index.js";
 import { NS } from "../schemas.js";
+import config from "../../../config/index.js";
+
+const LIST_TIMEOUT_SEC = Math.ceil(config.upstreamTimeoutMs / 1000);
 
 export const listConfigMaps = (input: unknown) => {
   const { namespace } = NS.parse(input);
   return withUpstream("kubernetes", "Failed to list configmaps", async () => {
-    const res = await getApi(k8s.CoreV1Api).listNamespacedConfigMap({ namespace });
+    const res = await getApi(k8s.CoreV1Api).listNamespacedConfigMap({
+      namespace,
+      limit: config.k8sListLimit,
+      timeoutSeconds: LIST_TIMEOUT_SEC,
+    });
     return res.items.map((cm) => ({
       name: cm.metadata!.name,
       namespace: cm.metadata!.namespace,
@@ -19,7 +26,11 @@ export const listConfigMaps = (input: unknown) => {
 export const listSecrets = (input: unknown) => {
   const { namespace } = NS.parse(input);
   return withUpstream("kubernetes", "Failed to list secrets", async () => {
-    const res = await getApi(k8s.CoreV1Api).listNamespacedSecret({ namespace });
+    const res = await getApi(k8s.CoreV1Api).listNamespacedSecret({
+      namespace,
+      limit: config.k8sListLimit,
+      timeoutSeconds: LIST_TIMEOUT_SEC,
+    });
     return res.items.map((s) => ({
       name: s.metadata!.name,
       namespace: s.metadata!.namespace,
