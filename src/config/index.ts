@@ -3,6 +3,10 @@ import "dotenv/config";
 const config = {
   // max time (seconds) to wait on any upstream (Prometheus/Loki HTTP, K8s API) before failing the tool
   upstreamTimeoutMs: parseInt(process.env.UPSTREAM_TIMEOUT_SECONDS ?? "30") * 1000,
+  // Shared bearer token required on /mcp when set. Unset = open (dev/stdio); a warning is logged in http mode.
+  auth: {
+    token: process.env.MCP_AUTH_TOKEN,
+  },
   // cap on items returned by namespaced list tools, so a huge namespace can't produce
   // a response that gets truncated to garbage downstream
   k8sListLimit: parseInt(process.env.K8S_LIST_LIMIT ?? "100"),
@@ -22,6 +26,14 @@ const config = {
     url: process.env.LOKI_URL ?? "http://localhost:3100",
     username: process.env.LOKI_USERNAME,
     password: process.env.LOKI_PASSWORD,
+  },
+  tracing: {
+    // Query backend: tempo | jaeger. (OTel Collector is ingest-only — point this at
+    // whatever store the collector exports to.) Tools error clearly if url is unset.
+    backend: process.env.TRACING_BACKEND ?? "tempo",
+    url: process.env.TRACING_URL ?? "",
+    username: process.env.TRACING_USERNAME,
+    password: process.env.TRACING_PASSWORD,
   },
 };
 

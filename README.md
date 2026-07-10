@@ -26,6 +26,7 @@ npm test                       # unit tests
 |----------|-------------|---------|
 | `TRANSPORT` | `stdio` or `http` | `stdio` |
 | `PORT` | HTTP port | `3000` |
+| `MCP_AUTH_TOKEN` | Bearer token required on `/mcp` (http transport). Unset = open + a startup warning. `/health` stays unauthenticated for probes | — |
 | `K8S_AUTH_MODE` | `kubeconfig` or `incluster` | `kubeconfig` |
 | `K8S_KUBECONFIG_PATH` | Path to kubeconfig | `~/.kube/config` |
 | `K8S_API_SERVER` | Kubernetes API server URL | — |
@@ -36,11 +37,15 @@ npm test                       # unit tests
 | `LOKI_URL` | Loki base URL | `http://localhost:3100` |
 | `LOKI_USERNAME` | Basic auth (optional) | — |
 | `LOKI_PASSWORD` | Basic auth (optional) | — |
-| `UPSTREAM_TIMEOUT_SECONDS` | Max wait on any upstream (K8s/Prometheus/Loki) before failing the tool | `30` |
+| `TRACING_BACKEND` | Trace query backend: `tempo` or `jaeger` | `tempo` |
+| `TRACING_URL` | Tracing backend base URL (tracing tools error until set) | — |
+| `TRACING_USERNAME` | Basic auth (optional) | — |
+| `TRACING_PASSWORD` | Basic auth (optional) | — |
+| `UPSTREAM_TIMEOUT_SECONDS` | Max wait on any upstream (K8s/Prometheus/Loki/tracing) before failing the tool | `30` |
 | `K8S_LIST_LIMIT` | Cap on items returned by namespaced list tools (pods/events/configmaps/secrets) | `100` |
 | `LOG_LEVEL` | `error\|warn\|info\|http\|debug` | `debug` (dev), `info` (prod) |
 
-## Tools (32)
+## Tools (35)
 
 ### Kubernetes (19)
 
@@ -88,6 +93,16 @@ npm test                       # unit tests
 | `loki_get_label_values` | List values for a label |
 | `loki_get_streams` | List active log streams |
 | `loki_get_stats` | Ingestion statistics |
+
+### Tracing (3)
+
+Backend-agnostic distributed tracing. Set `TRACING_BACKEND` to `tempo` or `jaeger`. (The OTel Collector is ingest-only — it has no query API; point `TRACING_URL` at whatever store the collector exports to.) Both backends are normalized to the same compact span shape.
+
+| Tool | Description |
+|------|-------------|
+| `tracing_search` | Find slow/failing traces by service, min duration, time window (Jaeger requires `service`; Tempo optional) |
+| `tracing_get_trace` | Full normalized span tree for one trace ID (service, name, durationMs, parent, error) |
+| `tracing_list_services` | List service names known to the tracing backend |
 
 ## Project Structure
 

@@ -4,15 +4,25 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z, type ZodTypeAny } from "zod";
 import express, { type Request, type Response } from "express";
+import axios from "axios";
 import crypto from "crypto";
 import logger, { logWithContext } from "../utils/logger/log.js";
 import allTools from "../tools/index.js";
 import config from "../config/index.js";
 import { withTimeout } from "../utils/timeout/index.js";
+import { UpstreamError, ValidationError } from "../utils/errors/index.js";
 
 // hard ceiling per tool call — sits just above the upstream HTTP/K8s timeouts so
 // their specific errors surface first, but still bounds anything that ignores them
 const TOOL_HANDLER_TIMEOUT_MS = config.upstreamTimeoutMs + 5000;
+
+// Constant-time string compare. Hash first so inputs are always equal length
+// (timingSafeEqual throws on length mismatch) and the token length never leaks.
+export function timingSafeEqualStr(a: string, b: string): boolean {
+  const ah = crypto.createHash("sha256").update(a).digest();
+  const bh = crypto.createHash("sha256").update(b).digest();
+  return crypto.timingSafeEqual(ah, bh);
+}
 
 type PropSchema = { type?: string; enum?: string[]; description?: string };
 type InputSchema = { properties?: Record<string, PropSchema>; required?: string[] };
@@ -84,13 +94,17 @@ export default class AppServer {
           const duration = Date.now() - start;
           const errorMsg = err instanceof Error ? err.message : String(err);
 
+          // Expected operational failures (upstream down, pod not found, bad input) log as
+          // one line — a stack of wrapper frames adds nothing. Unexpected errors keep the
+          // stack: those are the actual bugs.
+          const expected = err instanceof UpstreamError || err instanceof ValidationError;
           logWithContext("error", `Tool failed: ${tool.name}`, {
             correlationId: cid,
             toolName: tool.name,
             status: "error",
             duration,
             error: errorMsg,
-            stack: err instanceof Error ? err.stack : undefined,
+            ...(expected ? {} : { stack: err instanceof Error ? err.stack : undefined }),
           });
 
           return {
@@ -100,6 +114,33 @@ export default class AppServer {
         }
       });
     }
+  }
+
+  // Non-fatal upstream reachability probe at startup. Any HTTP response (even 4xx)
+  // counts as reachable — we're surfacing DNS/connect/timeout misconfig (e.g. a wrong
+  // PROMETHEUS_URL) at deploy time instead of at first tool call. Deliberately does NOT
+  // fail startup: Prometheus being down must not take the k8s tools down with it.
+  private async _checkUpstreams(): Promise<void> {
+    const upstreams: Array<[string, string]> = [
+      ["prometheus", config.prometheus.url],
+      ["loki", config.loki.url],
+    ];
+    if (config.tracing.url) upstreams.push([`tracing(${config.tracing.backend})`, config.tracing.url]);
+
+    await Promise.all(
+      upstreams.map(async ([name, url]) => {
+        try {
+          await axios.get(url, { timeout: 5000, validateStatus: () => true });
+          logWithContext("info", `Upstream reachable: ${name}`, { upstream: name, url });
+        } catch (err) {
+          logWithContext("warn", `Upstream UNREACHABLE: ${name} — its tools will fail until the URL/network is fixed`, {
+            upstream: name,
+            url,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      })
+    );
   }
 
   async start(): Promise<void> {
@@ -114,6 +155,8 @@ export default class AppServer {
       });
       process.exit(1);
     }
+
+    await this._checkUpstreams();
 
     if (transport === "http") {
       await this._startHttp();
@@ -150,6 +193,25 @@ export default class AppServer {
       (req as any).id = requestId;
       next();
     });
+
+    // Bearer-token gate on /mcp (NOT /health, so K8s probes stay unauthenticated).
+    // Open when MCP_AUTH_TOKEN is unset — but warn, so an exposed server is never silently open.
+    const authToken = config.auth.token;
+    if (authToken) {
+      app.use("/mcp", (req: Request, res: Response, next: express.NextFunction) => {
+        const header = req.headers.authorization ?? "";
+        const provided = header.startsWith("Bearer ") ? header.slice(7) : "";
+        if (!provided || !timingSafeEqualStr(provided, authToken)) {
+          logWithContext("warn", "Rejected unauthenticated /mcp request", { correlationId: (req as any).id });
+          res.status(401).json({ error: "unauthorized" });
+          return;
+        }
+        next();
+      });
+      logWithContext("info", "MCP HTTP auth enabled (bearer token required on /mcp)", {});
+    } else {
+      logWithContext("warn", "MCP HTTP running WITHOUT auth — set MCP_AUTH_TOKEN to require a bearer token", {});
+    }
 
     app.post("/mcp", async (req: Request, res: Response) => {
       const requestId = (req as any).id;

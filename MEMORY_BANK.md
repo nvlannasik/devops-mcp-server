@@ -1,7 +1,7 @@
 # Memory Bank — devops-mcp-server
 
 ## Project Overview
-MCP (Model Context Protocol) server for DevOps observability. Exposes 32 tools callable by AI agents to query Kubernetes, Prometheus, and Loki.
+MCP (Model Context Protocol) server for DevOps observability. Exposes 35 tools callable by AI agents to query Kubernetes, Prometheus, Loki, and distributed tracing (Tempo/Jaeger).
 
 ## Tech Stack
 - **Runtime:** Node.js >= 24, TypeScript (ESM, `"type": "module"`)
@@ -21,7 +21,7 @@ MCP (Model Context Protocol) server for DevOps observability. Exposes 32 tools c
 - `TRANSPORT=http` — for remote deployment, endpoint `POST /mcp`
 - **Bug fix applied:** HTTP mode creates a new `McpServer` per request (stateless) because the SDK does not allow reconnecting to an already-connected server instance
 
-## Tools (32 total)
+## Tools (35 total)
 
 ### Kubernetes (19)
 Handlers split per domain under `src/tools/kubernetes/handlers/`:
@@ -49,6 +49,13 @@ Handlers split per domain under `src/tools/kubernetes/handlers/`:
 
 ### Loki (6)
 `loki_query`, `loki_query_range`, `loki_get_labels`, `loki_get_label_values`, `loki_get_streams`, `loki_get_stats`
+
+### Tracing (3)
+`tracing_search`, `tracing_get_trace`, `tracing_list_services` — backend-agnostic distributed tracing under `src/tools/tracing/`.
+- **Backend selection:** `TRACING_BACKEND=tempo|jaeger`, `TRACING_URL` required (tools throw `ValidationError` until set). OTel Collector is ingest-only (no query API) → point `TRACING_URL` at the store the collector exports to.
+- **Adapter pattern (`adapters.ts`):** Tempo (TraceQL search + OTLP/JSON trace) and Jaeger (Query API) normalized to one compact shape (`TraceSummary`, `NormalizedSpan`) — keeps tokens bounded (agent truncates at 8000 chars) and lets one prompt playbook serve both. `normalizeOtlp` + `jaegerAdapter`/`tempoAdapter` are unit-tested in `adapters.test.ts`.
+- **Time/units:** handler accepts RFC3339 or Unix seconds; adapters convert (Tempo→seconds, Jaeger→microseconds). `minDurationMs` → `<n>ms` Go-duration string for both. Jaeger search **requires** `service`; Tempo optional.
+- Agent system prompt (`devops-ai-agent/prompts/system.md`) updated: High Latency playbook now chains metrics→`tracing_search`→`tracing_get_trace`, plus a Tracing tool-usage section.
 
 ## Architecture Patterns
 
