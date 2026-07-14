@@ -61,6 +61,11 @@ Handlers split per domain under `src/tools/kubernetes/handlers/`:
 
 ### withUpstream helper
 All handlers use `withUpstream(service, label, fn)` from `src/utils/errors/index.ts` to wrap try/catch — eliminates duplicated error handling.
+- **`conciseCause()`** (unit-tested) makes upstream errors token-cheap: K8s `ApiException` embeds the whole HTTP exchange (status line, escaped body, headers, audit-id) in `.message` — only the API's own `body.message` ("pods \"x\" not found") is kept; otherwise the message is cut before the `Body:`/`Headers:` dump. The original error stays attached as `cause`.
+- **Tool-failure logs skip the stack for expected errors** (`UpstreamError`/`ValidationError` = operational failures → one line); unexpected errors keep the stack — those are actual bugs.
+
+### Startup upstream probe
+`_checkUpstreams()` (app/index.ts) GETs every configured HTTP upstream (Prometheus, Loki, tracing) at startup with a 5s timeout. Any HTTP response counts as reachable (it detects DNS/connect/timeout misconfig, not app health). Unreachable → `Upstream UNREACHABLE` **warn** — deliberately non-fatal: Prometheus being down must not take the k8s tools down with it. Surfaces a wrong `PROMETHEUS_URL` at deploy time instead of at the first tool call. `/health` intentionally does NOT include upstreams (partial availability > all-or-nothing readiness).
 
 ### Timeouts & List Limits
 - `UPSTREAM_TIMEOUT_SECONDS` (default 30, converted to ms in config) bounds every upstream call:
