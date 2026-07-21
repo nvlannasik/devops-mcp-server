@@ -54,6 +54,10 @@ export default class AppServer {
     logWithContext("info", `MCP Server initialized with ${allTools.length} tools`, {
       toolCount: allTools.length,
     });
+    if (config.writeTools.enabled) {
+      const allowed = config.writeTools.allowedNamespaces;
+      logWithContext("warn", `WRITE TOOLS ENABLED — allowed namespaces: ${allowed.length ? allowed.join(", ") : "(none — all blocked until ALLOWED_REMEDIATION_NAMESPACES is set)"}`, {});
+    }
   }
 
   private _registerTools(): void {

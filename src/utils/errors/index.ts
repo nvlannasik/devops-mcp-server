@@ -55,6 +55,9 @@ export async function withUpstream<T>(
   try {
     return await fn();
   } catch (err) {
+    // guardrail refusals are already complete, user-facing sentences — prefixing them
+    // with "Failed to <action> on <target>:" just duplicates the target in Slack
+    if (err instanceof ValidationError) throw err;
     throw new UpstreamError(`${label}: ${conciseCause(err)}`, service, err);
   }
 }

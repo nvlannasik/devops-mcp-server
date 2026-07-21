@@ -64,6 +64,22 @@ All handlers use `withUpstream(service, label, fn)` from `src/utils/errors/index
 - **`conciseCause()`** (unit-tested) makes upstream errors token-cheap: K8s `ApiException` embeds the whole HTTP exchange (status line, escaped body, headers, audit-id) in `.message` — only the API's own `body.message` ("pods \"x\" not found") is kept; otherwise the message is cut before the `Body:`/`Headers:` dump. The original error stays attached as `cause`.
 - **Tool-failure logs skip the stack for expected errors** (`UpstreamError`/`ValidationError` = operational failures → one line); unexpected errors keep the stack — those are actual bugs.
 
+### Write tools (Guarded Remediation)
+- `kubernetes/write.ts`: **4 typed actions** — `k8s_rollout_restart` (deployment/sts/ds via restartedAt annotation), `k8s_set_image` (one container's image; reports previous → new), `k8s_set_resources` (requests/limits, only provided values patched), `k8s_scale` (deployment/sts only — ds has no replicas; bounded by `MAX_SCALE_DELTA`, scale-to-zero always refused). **Never a generic patch tool** — that would be arbitrary kubectl in disguise. Registered ONLY when `MCP_ENABLE_WRITE_TOOLS=true` (conditional spread in `tools/index.ts` — never listed otherwise; a listed-but-refusing tool makes the agent's LLM loop).
+- **Description convention: every write tool MUST start with `[WRITE]`** — the agent filters these out of its agentic loop by that prefix; they are only callable via the approval flow. Breaking the convention silently hands the model unguarded execution.
+- Server-side guardrails (`guardrails.ts`, unit-tested): `ALLOWED_REMEDIATION_NAMESPACES` allowlist (empty = all blocked) + always-blocked `kube-system`/`kube-public`/`kube-node-lease`/`flux-system`. Enforced here because this server holds the cluster creds — agent checks are UX only. RBAC is the floor beneath.
+- Dry-run = K8s server-side `dryRun: "All"` on the same patch (full validation, zero change).
+- **Guardrail refusals pass through `withUpstream` unwrapped** (`ValidationError` re-thrown as-is): they are complete user-facing sentences, and the "Failed to set image on X:" prefix duplicated the target in Slack. Workload identifiers in error labels are backticked (`` deployment `ns/name` ``) — they render as code in Slack.
+- **GitOps guard** (`assertNotGitOpsManaged`, unit-tested): the spec-mutating actions (`set_image`/`set_resources`/`scale`) read the workload's labels and REFUSE when it's managed by Flux (`kustomize.toolkit.fluxcd.io/name` / `helm.toolkit.fluxcd.io/name` — error names the owning Kustomization/HelmRelease) or plain Helm (`app.kubernetes.io/managed-by: Helm`) — a direct change would be reverted/lost, so "success" would be a lie. `rollout_restart` is exempt (restartedAt annotation isn't a Flux-managed field). Runs before the patch, so the agent's dry-run refuses at proposal time → no misleading card.
+- **`container` is optional** in `k8s_set_image`/`k8s_set_resources` (`findContainer`, unit-tested): omitted → auto-resolved when the workload has exactly one container; multi-container → refused listing the names; wrong name → refused listing what exists. Rationale: the agent's proposal model cannot know container names (not in its context) and guessed one from the workload name during live testing.
+
+### Workload listings include containers
+`k8s_list_deployments/statefulsets/daemonsets` return `containers: [{name, image}]` per
+workload. Without them the model literally could not answer "what image tag runs where"
+(it pasted kubectl how-tos instead), the proposal model could not follow "keep the current
+repository, change only the tag" (it invented `nginx:latest` for the ingress controller),
+and it nagged users for container names. One listing call now carries everything.
+
 ### Startup upstream probe
 `_checkUpstreams()` (app/index.ts) GETs every configured HTTP upstream (Prometheus, Loki, tracing) at startup with a 5s timeout. Any HTTP response counts as reachable (it detects DNS/connect/timeout misconfig, not app health). Unreachable → `Upstream UNREACHABLE` **warn** — deliberately non-fatal: Prometheus being down must not take the k8s tools down with it. Surfaces a wrong `PROMETHEUS_URL` at deploy time instead of at the first tool call. `/health` intentionally does NOT include upstreams (partial availability > all-or-nothing readiness).
 

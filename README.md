@@ -27,6 +27,9 @@ npm test                       # unit tests
 | `TRANSPORT` | `stdio` or `http` | `stdio` |
 | `PORT` | HTTP port | `3000` |
 | `MCP_AUTH_TOKEN` | Bearer token required on `/mcp` (http transport). Unset = open + a startup warning. `/health` stays unauthenticated for probes | — |
+| `MCP_ENABLE_WRITE_TOOLS` | `true` registers the `[WRITE]` tools (`k8s_rollout_restart`, `k8s_set_image`, `k8s_set_resources`, `k8s_scale`). Off = not even listed. `container` is optional on set_image/set_resources (auto-resolved for single-container workloads) | `false` |
+| `ALLOWED_REMEDIATION_NAMESPACES` | Comma-separated namespaces write tools may target. **Empty = all blocked.** `kube-system`/`kube-public`/`kube-node-lease`/`flux-system` are always blocked. Spec-mutating actions also refuse Flux/Helm-managed workloads (GitOps guard — the source of truth would revert them); `rollout_restart` stays allowed | — |
+| `MAX_SCALE_DELTA` | Max replica change per `k8s_scale` action (scale-to-zero is always refused) | `5` |
 | `K8S_AUTH_MODE` | `kubeconfig` or `incluster` | `kubeconfig` |
 | `K8S_KUBECONFIG_PATH` | Path to kubeconfig | `~/.kube/config` |
 | `K8S_API_SERVER` | Kubernetes API server URL | — |

@@ -43,7 +43,7 @@ const tools: Tool[] = [
   },
   {
     name: "k8s_list_deployments",
-    description: "List deployments in a namespace",
+    description: "List deployments in a namespace, including each container's name and image (use this to answer image/tag questions)",
     inputSchema: {
       type: "object",
       properties: { namespace: { type: "string", description: "Namespace (default: default)" } },
@@ -52,7 +52,7 @@ const tools: Tool[] = [
   },
   {
     name: "k8s_list_statefulsets",
-    description: "List StatefulSets in a namespace",
+    description: "List StatefulSets in a namespace, including each container's name and image",
     inputSchema: {
       type: "object",
       properties: { namespace: { type: "string", description: "Namespace (default: default)" } },
@@ -61,7 +61,7 @@ const tools: Tool[] = [
   },
   {
     name: "k8s_list_daemonsets",
-    description: "List DaemonSets in a namespace",
+    description: "List DaemonSets in a namespace, including each container's name and image",
     inputSchema: {
       type: "object",
       properties: { namespace: { type: "string", description: "Namespace (default: default)" } },
