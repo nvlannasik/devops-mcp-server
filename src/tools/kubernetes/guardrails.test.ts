@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assertNamespaceAllowed, assertScaleAllowed, assertNotGitOpsManaged } from "./guardrails.js";
+import { assertNamespaceAllowed, assertScaleAllowed, gitOpsVerdict } from "./guardrails.js";
 
 test("protected namespaces are blocked even when allowlisted", () => {
   for (const ns of ["kube-system", "kube-public", "kube-node-lease", "flux-system"]) {
@@ -30,23 +30,25 @@ test("scale delta beyond MAX_SCALE_DELTA is refused; within passes", () => {
   assert.doesNotThrow(() => assertScaleAllowed(6, 2, 5)); // scale down within delta
 });
 
-test("GitOps guard refuses Flux-managed workloads with the owning object named", () => {
-  assert.throws(
-    () => assertNotGitOpsManaged({ "kustomize.toolkit.fluxcd.io/name": "apps", "kustomize.toolkit.fluxcd.io/namespace": "flux-system" }, "deployment ns/app"),
-    /Flux Kustomization "flux-system\/apps".*reverted/
-  );
-  assert.throws(
-    () => assertNotGitOpsManaged({ "helm.toolkit.fluxcd.io/name": "auth", "helm.toolkit.fluxcd.io/namespace": "dev-auth" }, "deployment ns/app"),
-    /Flux HelmRelease "dev-auth\/auth"/
-  );
+test("gitOpsVerdict: Flux HelmRelease is PR-eligible and carries the HelmRelease identity", () => {
+  const v = gitOpsVerdict({ "helm.toolkit.fluxcd.io/name": "auth", "helm.toolkit.fluxcd.io/namespace": "dev-auth" }, "deployment `ns/app`");
+  assert.equal(v.managed, true);
+  assert.ok(v.managed && v.prEligible && v.source === "flux-helmrelease");
+  assert.deepEqual(v.managed ? v.helmRelease : null, { name: "auth", namespace: "dev-auth" });
+  assert.match(v.managed ? v.refuseMessage : "", /Pull Request/);
 });
 
-test("GitOps guard refuses Helm-managed workloads", () => {
-  assert.throws(() => assertNotGitOpsManaged({ "app.kubernetes.io/managed-by": "Helm" }, "deployment ns/app"), /managed by Helm.*helm upgrade/);
+test("gitOpsVerdict: Kustomize and plain Helm are managed but NOT PR-eligible", () => {
+  const ks = gitOpsVerdict({ "kustomize.toolkit.fluxcd.io/name": "apps", "kustomize.toolkit.fluxcd.io/namespace": "flux-system" }, "deployment `ns/app`");
+  assert.ok(ks.managed && !ks.prEligible && ks.source === "flux-kustomization");
+  assert.match(ks.managed ? ks.refuseMessage : "", /Flux Kustomization `flux-system\/apps`/);
+  const helm = gitOpsVerdict({ "app.kubernetes.io/managed-by": "Helm" }, "deployment `ns/app`");
+  assert.ok(helm.managed && !helm.prEligible && helm.source === "helm");
+  assert.match(helm.managed ? helm.refuseMessage : "", /helm upgrade/);
 });
 
-test("GitOps guard passes unmanaged workloads (and missing labels)", () => {
-  assertNotGitOpsManaged({ app: "plain" }, "deployment ns/app");
-  assertNotGitOpsManaged(undefined, "deployment ns/app");
-  assertNotGitOpsManaged({ "app.kubernetes.io/managed-by": "kubectl" }, "deployment ns/app");
+test("gitOpsVerdict: unmanaged workloads (and missing labels) are not managed", () => {
+  assert.equal(gitOpsVerdict({ app: "plain" }, "deployment `ns/app`").managed, false);
+  assert.equal(gitOpsVerdict(undefined, "deployment `ns/app`").managed, false);
+  assert.equal(gitOpsVerdict({ "app.kubernetes.io/managed-by": "kubectl" }, "deployment `ns/app`").managed, false);
 });

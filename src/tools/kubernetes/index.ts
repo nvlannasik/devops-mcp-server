@@ -146,9 +146,28 @@ const tools: Tool[] = [
   },
   {
     name: "k8s_list_crds",
-    description: "List all CustomResourceDefinitions in the cluster",
+    description: "List all CustomResourceDefinitions in the cluster (the types — use k8s_get_custom_resources for the objects)",
     inputSchema: { type: "object", properties: {} },
     handler: h.listCRDs,
+  },
+  {
+    name: "k8s_get_custom_resources",
+    description:
+      "Read custom resource OBJECTS of any CRD — e.g. Flux HelmRelease/Kustomization, cert-manager Certificate. " +
+      "Without `name`: compact list (name + Ready condition + message). With `name`: the full object (spec + status). " +
+      "Find group/version/plural via k8s_list_crds if unsure.",
+    inputSchema: {
+      type: "object",
+      required: ["group", "version", "plural"],
+      properties: {
+        group: { type: "string", description: 'API group, e.g. "helm.toolkit.fluxcd.io"' },
+        version: { type: "string", description: 'API version, e.g. "v2"' },
+        plural: { type: "string", description: 'Resource plural, e.g. "helmreleases"' },
+        namespace: { type: "string", description: "Namespace — omit for cluster-scoped resources" },
+        name: { type: "string", description: "Object name — omit to list" },
+      },
+    },
+    handler: h.getCustomResources,
   },
   {
     name: "k8s_list_service_accounts",

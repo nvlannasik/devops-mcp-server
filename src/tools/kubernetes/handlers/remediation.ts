@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { getApi, k8s } from "../client.js";
-import { withUpstream } from "../../../utils/errors/index.js";
-import { assertNamespaceAllowed, assertScaleAllowed, assertNotGitOpsManaged } from "../guardrails.js";
+import { withUpstream, ValidationError } from "../../../utils/errors/index.js";
+import { assertNamespaceAllowed, assertScaleAllowed, gitOpsVerdict } from "../guardrails.js";
 import config from "../../../config/index.js";
 
 // [WRITE] handlers — typed, whitelisted actions only (never a generic patch tool: that
@@ -44,6 +44,42 @@ export function findContainer(workload: WorkloadLike, container: string | undefi
     throw new Error(`container "${container}" not found in ${label} (has: ${names})`);
   }
   return found;
+}
+
+// ---- GitOps PR-flow preview (DESIGN_gitops_pr_remediation.md §4.1) ----
+
+export interface GitOpsChange {
+  field: string;
+  from: string | number;
+  to: string | number;
+}
+
+// When the workload is a Flux HelmRelease AND this is a dry run, return a structured
+// PR-preview result — Step 4's agent routes it over SQS to the private-network GitOps
+// handler instead of patching directly. Otherwise refuse (throw): the execute path can
+// never patch a GitOps-managed workload directly, and Kustomize / plain-Helm sources are
+// not PR-eligible in v2. Returns null when the workload is NOT GitOps-managed (proceed).
+function gitOpsPreviewOrRefuse(
+  labels: Record<string, string> | undefined,
+  target: string,
+  dryRun: boolean,
+  ctx: { workload: string; action: string; container?: string; changes: GitOpsChange[] }
+) {
+  const v = gitOpsVerdict(labels, target);
+  if (!v.managed) return null;
+  if (v.prEligible && dryRun) {
+    return {
+      gitOpsPrEligible: true as const,
+      source: v.source,
+      helmRelease: v.helmRelease!,
+      workload: ctx.workload,
+      action: ctx.action,
+      ...(ctx.container ? { container: ctx.container } : {}),
+      changes: ctx.changes,
+      message: v.refuseMessage,
+    };
+  }
+  throw new ValidationError(v.refuseMessage);
 }
 
 // ---- k8s_rollout_restart ----
@@ -98,9 +134,15 @@ export const setImage = (input: unknown) => {
 
   return withUpstream("kubernetes", `Failed to set image on ${kind} \`${namespace}/${name}\``, async () => {
     const current = await readWorkload(kind, name, namespace);
-    assertNotGitOpsManaged(current.metadata?.labels, `${kind} \`${namespace}/${name}\``);
     const target = findContainer(current, container, `${kind} \`${namespace}/${name}\``);
     const containerName = target.name ?? container ?? "";
+    const preview = gitOpsPreviewOrRefuse(current.metadata?.labels, `${kind} \`${namespace}/${name}\``, !!dry_run, {
+      workload: `${kind}/${namespace}/${name}`,
+      action: "set_image",
+      container: containerName,
+      changes: [{ field: "image", from: target.image ?? "(unset)", to: image }],
+    });
+    if (preview) return preview;
     // strategic merge patch merges the containers array by name — only this container changes
     const patch = { spec: { template: { spec: { containers: [{ name: containerName, image }] } } } };
     await patchWorkload(kind, name, namespace, patch, dry_run);
@@ -135,9 +177,14 @@ export const scale = (input: unknown) => {
 
   return withUpstream("kubernetes", `Failed to scale ${kind} \`${namespace}/${name}\``, async () => {
     const current = await readWorkload(kind, name, namespace);
-    assertNotGitOpsManaged(current.metadata?.labels, `${kind} \`${namespace}/${name}\``);
     const currentReplicas = (current.spec as { replicas?: number }).replicas ?? 0;
-    assertScaleAllowed(currentReplicas, replicas, config.writeTools.maxScaleDelta); // delta bound + no scale-to-zero
+    assertScaleAllowed(currentReplicas, replicas, config.writeTools.maxScaleDelta); // delta bound + no scale-to-zero (applies to the PR path too)
+    const preview = gitOpsPreviewOrRefuse(current.metadata?.labels, `${kind} \`${namespace}/${name}\``, !!dry_run, {
+      workload: `${kind}/${namespace}/${name}`,
+      action: "scale",
+      changes: [{ field: "replicas", from: currentReplicas, to: replicas }],
+    });
+    if (preview) return preview;
 
     await patchWorkload(kind, name, namespace, { spec: { replicas } }, dry_run);
     return {
@@ -172,6 +219,21 @@ const SetResources = z
 
 type ResourceFields = { cpu_request?: string; memory_request?: string; cpu_limit?: string; memory_limit?: string };
 
+// exported for unit tests — maps the provided resource fields to {field, from, to} changes
+// for the GitOps PR preview, pulling `from` from the container's current resources
+export function resourceChanges(
+  currentResources: { requests?: Record<string, string>; limits?: Record<string, string> } | undefined,
+  f: ResourceFields
+): GitOpsChange[] {
+  const cur = currentResources ?? {};
+  const out: GitOpsChange[] = [];
+  if (f.cpu_request) out.push({ field: "requests.cpu", from: cur.requests?.cpu ?? "(unset)", to: f.cpu_request });
+  if (f.memory_request) out.push({ field: "requests.memory", from: cur.requests?.memory ?? "(unset)", to: f.memory_request });
+  if (f.cpu_limit) out.push({ field: "limits.cpu", from: cur.limits?.cpu ?? "(unset)", to: f.cpu_limit });
+  if (f.memory_limit) out.push({ field: "limits.memory", from: cur.limits?.memory ?? "(unset)", to: f.memory_limit });
+  return out;
+}
+
 // exported for unit tests — builds a patch containing ONLY the provided values
 export function buildResourcesPatch(container: string, f: ResourceFields) {
   const requests: Record<string, string> = {};
@@ -192,9 +254,15 @@ export const setResources = (input: unknown) => {
 
   return withUpstream("kubernetes", `Failed to set resources on ${kind} \`${namespace}/${name}\``, async () => {
     const current = await readWorkload(kind, name, namespace);
-    assertNotGitOpsManaged(current.metadata?.labels, `${kind} \`${namespace}/${name}\``);
     const target = findContainer(current, container, `${kind} \`${namespace}/${name}\``);
     const containerName = target.name ?? container ?? "";
+    const preview = gitOpsPreviewOrRefuse(current.metadata?.labels, `${kind} \`${namespace}/${name}\``, !!dry_run, {
+      workload: `${kind}/${namespace}/${name}`,
+      action: "set_resources",
+      container: containerName,
+      changes: resourceChanges(target.resources as { requests?: Record<string, string>; limits?: Record<string, string> } | undefined, fields),
+    });
+    if (preview) return preview;
     await patchWorkload(kind, name, namespace, buildResourcesPatch(containerName, fields), dry_run);
     return {
       action: "set_resources",
@@ -204,6 +272,50 @@ export const setResources = (input: unknown) => {
       newValues: fields,
       dryRun: !!dry_run,
       result: dry_run ? "validated (nothing was changed)" : "resources updated — rolling update in progress",
+    };
+  });
+};
+
+// ---- k8s_delete_pod ----
+
+// Deleting a pod is only a remediation when a controller brings a replacement.
+// Job pods are excluded on purpose (a completed/failed Job won't recreate).
+const RECREATING_OWNERS = new Set(["ReplicaSet", "StatefulSet", "DaemonSet"]);
+
+// exported for unit tests
+export function findRecreatingOwner(meta?: { ownerReferences?: Array<{ kind?: string; name?: string; controller?: boolean }> }) {
+  return (meta?.ownerReferences ?? []).find((o) => o.controller && RECREATING_OWNERS.has(o.kind ?? "")) ?? null;
+}
+
+const DeletePod = z.object({
+  namespace: z.string().min(1),
+  pod: z.string().min(1),
+  dry_run: z.boolean().optional(),
+});
+
+export const deletePod = (input: unknown) => {
+  const { namespace, pod, dry_run } = DeletePod.parse(input);
+  assertNamespaceAllowed(namespace, config.writeTools.allowedNamespaces);
+
+  return withUpstream("kubernetes", `Failed to delete pod \`${namespace}/${pod}\``, async () => {
+    const api = getApi(k8s.CoreV1Api);
+    const current = await api.readNamespacedPod({ name: pod, namespace });
+    const owner = findRecreatingOwner(current.metadata);
+    if (!owner) {
+      throw new ValidationError(
+        `pod \`${namespace}/${pod}\` has no recreating controller (ReplicaSet/StatefulSet/DaemonSet) — deleting it would not bring a replacement; that is an outage, not a remediation`
+      );
+    }
+    // no GitOps guard on purpose: like rollout_restart, a recreated pod is reconcile-safe
+    await api.deleteNamespacedPod({ name: pod, namespace, ...(dry_run ? { dryRun: "All" } : {}) });
+    return {
+      action: "delete_pod",
+      pod: `${namespace}/${pod}`,
+      owner: `${owner.kind}/${owner.name}`,
+      dryRun: !!dry_run,
+      result: dry_run
+        ? `validated — pod exists and ${owner.kind}/${owner.name} will recreate it (nothing was changed)`
+        : `pod deleted — ${owner.kind}/${owner.name} is recreating it`,
     };
   });
 };

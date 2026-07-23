@@ -27,7 +27,7 @@ npm test                       # unit tests
 | `TRANSPORT` | `stdio` or `http` | `stdio` |
 | `PORT` | HTTP port | `3000` |
 | `MCP_AUTH_TOKEN` | Bearer token required on `/mcp` (http transport). Unset = open + a startup warning. `/health` stays unauthenticated for probes | — |
-| `MCP_ENABLE_WRITE_TOOLS` | `true` registers the `[WRITE]` tools (`k8s_rollout_restart`, `k8s_set_image`, `k8s_set_resources`, `k8s_scale`). Off = not even listed. `container` is optional on set_image/set_resources (auto-resolved for single-container workloads) | `false` |
+| `MCP_ENABLE_WRITE_TOOLS` | `true` registers the `[WRITE]` tools (`k8s_rollout_restart`, `k8s_set_image`, `k8s_set_resources`, `k8s_scale`, `k8s_delete_pod`). Off = not even listed. `container` is optional on set_image/set_resources (auto-resolved for single-container workloads) | `false` |
 | `ALLOWED_REMEDIATION_NAMESPACES` | Comma-separated namespaces write tools may target. **Empty = all blocked.** `kube-system`/`kube-public`/`kube-node-lease`/`flux-system` are always blocked. Spec-mutating actions also refuse Flux/Helm-managed workloads (GitOps guard — the source of truth would revert them); `rollout_restart` stays allowed | — |
 | `MAX_SCALE_DELTA` | Max replica change per `k8s_scale` action (scale-to-zero is always refused) | `5` |
 | `K8S_AUTH_MODE` | `kubeconfig` or `incluster` | `kubeconfig` |
@@ -69,7 +69,8 @@ npm test                       # unit tests
 | `k8s_list_pvcs` | List PersistentVolumeClaims |
 | `k8s_list_resource_quotas` | List ResourceQuotas (hard vs used) |
 | `k8s_list_events` | List events — supports `since_minutes` filter |
-| `k8s_list_crds` | List CustomResourceDefinitions |
+| `k8s_list_crds` | List CustomResourceDefinitions (the types) |
+| `k8s_get_custom_resources` | Read custom resource objects of any CRD (e.g. Flux HelmRelease/Kustomization) — list (compact, Ready condition) or full object by name |
 | `k8s_list_service_accounts` | List ServiceAccounts |
 | `k8s_list_configmaps` | List ConfigMaps with keys and data |
 | `k8s_list_secrets` | List Secrets (name and type only, values never exposed) |

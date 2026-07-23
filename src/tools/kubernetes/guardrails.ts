@@ -21,25 +21,54 @@ export function assertScaleAllowed(current: number, target: number, maxDelta: nu
   }
 }
 
-// GitOps guard for the SPEC-MUTATING actions (set_image / set_resources / scale):
-// Flux reverts direct spec changes on its next reconcile (~minutes), so "success" would
-// be a lie — refuse up front with the real fix location. rollout_restart is exempt
-// (the restartedAt annotation is not a Flux-managed field, SSA ownership keeps it).
-export function assertNotGitOpsManaged(labels: Record<string, string> | undefined, target: string): void {
+// GitOps ownership verdict for the SPEC-MUTATING actions (set_image / set_resources /
+// scale). Flux reverts direct spec changes on its next reconcile (~minutes), so a direct
+// patch is a lie. Only Flux HelmRelease-managed workloads are eligible for the PR flow (v2,
+// DESIGN_gitops_pr_remediation.md) — the change goes to the HelmRelease's spec.values in
+// Git. Kustomize (raw-manifest, later phase) and plain Helm (not git-backed) are refused.
+// rollout_restart / delete_pod are exempt (reconcile-safe) and never call this.
+export type GitOpsVerdict =
+  | { managed: false }
+  | {
+      managed: true;
+      prEligible: boolean; // true only for flux-helmrelease (the v2 PR-flow target)
+      source: "flux-helmrelease" | "flux-kustomization" | "helm";
+      helmRelease?: { name: string; namespace: string };
+      refuseMessage: string; // human sentence for the execute/refuse path
+    };
+
+export function gitOpsVerdict(labels: Record<string, string> | undefined, target: string): GitOpsVerdict {
   const l = labels ?? {};
-  const flux =
-    (l["kustomize.toolkit.fluxcd.io/name"] && `Flux Kustomization "${l["kustomize.toolkit.fluxcd.io/namespace"] ?? "?"}/${l["kustomize.toolkit.fluxcd.io/name"]}"`) ||
-    (l["helm.toolkit.fluxcd.io/name"] && `Flux HelmRelease "${l["helm.toolkit.fluxcd.io/namespace"] ?? "?"}/${l["helm.toolkit.fluxcd.io/name"]}"`);
-  if (flux) {
-    throw new ValidationError(
-      `${target} is managed by ${flux} — a direct change would be reverted on the next Flux reconcile. Change it in the GitOps repository instead (rollout_restart is still allowed).`
-    );
+  const hrName = l["helm.toolkit.fluxcd.io/name"];
+  if (hrName) {
+    const namespace = l["helm.toolkit.fluxcd.io/namespace"] ?? "";
+    return {
+      managed: true,
+      prEligible: true,
+      source: "flux-helmrelease",
+      helmRelease: { name: hrName, namespace },
+      refuseMessage: `${target} is managed by Flux HelmRelease \`${namespace}/${hrName}\` — a direct change would be reverted on the next Flux reconcile. It must be applied via a Pull Request to the GitOps repository (rollout_restart is still allowed).`,
+    };
+  }
+  const ksName = l["kustomize.toolkit.fluxcd.io/name"];
+  if (ksName) {
+    const namespace = l["kustomize.toolkit.fluxcd.io/namespace"] ?? "";
+    return {
+      managed: true,
+      prEligible: false, // raw-manifest PR flow is a later phase (§11)
+      source: "flux-kustomization",
+      refuseMessage: `${target} is managed by Flux Kustomization \`${namespace}/${ksName}\` — a direct change would be reverted on the next Flux reconcile. Change it in the GitOps repository instead (rollout_restart is still allowed).`,
+    };
   }
   if (l["app.kubernetes.io/managed-by"] === "Helm") {
-    throw new ValidationError(
-      `${target} is managed by Helm — a direct change would be lost on the next helm upgrade. Change the chart values instead (rollout_restart is still allowed).`
-    );
+    return {
+      managed: true,
+      prEligible: false, // plain Helm is not git-backed — no repo to PR against
+      source: "helm",
+      refuseMessage: `${target} is managed by Helm — a direct change would be lost on the next helm upgrade. Change the chart values instead (rollout_restart is still allowed).`,
+    };
   }
+  return { managed: false };
 }
 
 export function assertNamespaceAllowed(namespace: string, allowlist: string[]): void {
