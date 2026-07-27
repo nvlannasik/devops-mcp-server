@@ -61,3 +61,50 @@ export const getCustomResources = (input: unknown) => {
     return compactCustomResources(((res as { items?: CrItem[] }).items ?? []) as CrItem[]);
   });
 };
+
+// ---- generic get by apiVersion+kind (any built-in OR custom resource) ----
+// KubernetesObjectApi resolves the REST path via discovery, so this handles the core group ("v1")
+// AND grouped resources ("apps/v1") uniformly — the one reader for resources without a typed tool.
+
+const GetResource = z.object({
+  api_version: z.string().min(1), // "v1" (core) or "<group>/<version>", e.g. "apps/v1"
+  kind: z.string().min(1), // e.g. "Deployment"
+  name: z.string().optional(), // omit to list (compact)
+  namespace: z.string().optional(), // omit for cluster-scoped
+});
+
+export const getResource = (input: unknown) => {
+  const { api_version, kind, name, namespace } = GetResource.parse(input);
+  return withUpstream("kubernetes", `Failed to get ${api_version}/${kind}`, async () => {
+    const api = getApi(k8s.KubernetesObjectApi);
+    if (name) {
+      // full object (spec + status)
+      return api.read({ apiVersion: api_version, kind, metadata: { name, namespace } });
+    }
+    const res = await api.list(api_version, kind, namespace);
+    return compactCustomResources((res.items ?? []) as CrItem[]);
+  });
+};
+
+// ---- api-resources discovery (which GVKs this cluster serves) ----
+
+export const listApiResources = () =>
+  withUpstream("kubernetes", "Failed to list API resources", async () => {
+    // core (/api/v1) kinds + every API group with its versions — the cluster-specific GVK map
+    // the agent needs to drive k8s_get_resource. (CRD *types* with their plurals: k8s_list_crds.)
+    const core = await getApi(k8s.CoreV1Api).getAPIResources();
+    const groups = await getApi(k8s.ApisApi).getAPIVersions();
+    return {
+      core: {
+        apiVersion: "v1",
+        resources: (core.resources ?? [])
+          .filter((r) => !r.name.includes("/")) // drop subresources (pods/log, pods/status)
+          .map((r) => ({ name: r.name, kind: r.kind, namespaced: r.namespaced })),
+      },
+      groups: (groups.groups ?? []).map((g) => ({
+        group: g.name,
+        preferredVersion: g.preferredVersion?.groupVersion,
+        versions: g.versions?.map((v) => v.groupVersion),
+      })),
+    };
+  });

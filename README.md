@@ -48,16 +48,26 @@ npm test                       # unit tests
 | `K8S_LIST_LIMIT` | Cap on items returned by namespaced list tools (pods/events/configmaps/secrets) | `100` |
 | `LOG_LEVEL` | `error\|warn\|info\|http\|debug` | `debug` (dev), `info` (prod) |
 
-## Tools (35)
+## Tools (48)
 
-### Kubernetes (19)
+### Kubernetes (32)
 
 | Tool | Description |
 |------|-------------|
 | `k8s_list_namespaces` | List all namespaces |
 | `k8s_list_nodes` | List nodes with status, roles, and resource capacity |
+| `k8s_describe_pod` | ONE pod's detailed status — container state/lastState (OOMKilled + exit code, CrashLoopBackOff, ImagePullBackOff), conditions, QoS, configured requests/limits, node, **+ the pod's recent events** (like `kubectl describe`). RCA workhorse (no live usage — that's Prometheus) |
+| `k8s_describe_node` | ONE node's conditions (MemoryPressure/DiskPressure/PIDPressure/Ready), taints, unschedulable, capacity vs allocatable — for Pending pods / node incidents |
+| `k8s_get_endpoints` | Ready vs not-ready backend addresses behind a Service (`readyCount=0` → 503 / connection-refused) |
+| `k8s_get_rollout_status` | Rollout progress of ONE Deployment/StatefulSet/DaemonSet — desired vs updated/ready/available + conditions (e.g. ProgressDeadlineExceeded). For "deploy stuck" |
+| `k8s_list_replicasets` | ReplicaSets with owner + revision + desired/ready — rollout history (active vs stale RS) |
+| `k8s_list_pvs` | PersistentVolumes: phase (Bound/Released/Failed), capacity, storageClass, bound claim |
+| `k8s_list_storageclasses` | StorageClasses: provisioner, default flag — PVC Pending often = no default class / broken provisioner |
+| `k8s_list_network_policies` | NetworkPolicies: podSelector, policyTypes, rule counts — "traffic blocked" investigations |
+| `k8s_list_pdbs` | PodDisruptionBudgets: min/maxUnavailable + disruptionsAllowed (0 blocks node drain) |
+| `k8s_get_sa_permissions` | A ServiceAccount's Role/ClusterRole bindings + resolved rules — for `forbidden` RCA |
 | `k8s_list_pods` | List pods (filter by namespace/label) |
-| `k8s_get_pod_logs` | Get pod logs (with tail support) |
+| `k8s_get_pod_logs` | Get pod logs (tail, `since_seconds`, and `previous:true` for the crashed/prior container instance — CrashLoop root cause) |
 | `k8s_list_deployments` | List Deployments |
 | `k8s_list_statefulsets` | List StatefulSets |
 | `k8s_list_daemonsets` | List DaemonSets |
@@ -71,6 +81,8 @@ npm test                       # unit tests
 | `k8s_list_events` | List events — supports `since_minutes` filter |
 | `k8s_list_crds` | List CustomResourceDefinitions (the types) |
 | `k8s_get_custom_resources` | Read custom resource objects of any CRD (e.g. Flux HelmRelease/Kustomization) — list (compact, Ready condition) or full object by name |
+| `k8s_get_resource` | Get ANY resource by `apiVersion`+`kind` — full object (spec+status) by name, or compact list. Built-ins (`v1`/`apps/v1`/…) AND custom resources; for kinds without a dedicated tool |
+| `k8s_list_api_resources` | Which API groups/versions this cluster serves (`kubectl api-resources`) — core v1 kinds + every group's versions. Finds the right `apiVersion` for `k8s_get_resource` |
 | `k8s_list_service_accounts` | List ServiceAccounts |
 | `k8s_list_configmaps` | List ConfigMaps with keys and data |
 | `k8s_list_secrets` | List Secrets (name and type only, values never exposed) |

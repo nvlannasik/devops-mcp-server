@@ -11,3 +11,7 @@ export * from "./events.js";
 export * from "./crds.js";
 export * from "./serviceaccounts.js";
 export * from "./configs.js";
+export * from "./describe.js";
+export * from "./rollout.js";
+export * from "./policy.js";
+export * from "./rbac.js";

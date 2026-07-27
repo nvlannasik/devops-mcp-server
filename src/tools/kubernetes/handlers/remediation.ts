@@ -68,6 +68,9 @@ function gitOpsPreviewOrRefuse(
   const v = gitOpsVerdict(labels, target);
   if (!v.managed) return null;
   if (v.prEligible && dryRun) {
+    // the chart component (if the workload carries the label) disambiguates the values
+    // sub-tree for multi-component charts
+    const component = labels?.["app.kubernetes.io/component"];
     return {
       gitOpsPrEligible: true as const,
       source: v.source,
@@ -75,6 +78,7 @@ function gitOpsPreviewOrRefuse(
       workload: ctx.workload,
       action: ctx.action,
       ...(ctx.container ? { container: ctx.container } : {}),
+      ...(component ? { component } : {}),
       changes: ctx.changes,
       message: v.refuseMessage,
     };

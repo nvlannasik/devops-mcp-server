@@ -1,7 +1,7 @@
 # Memory Bank — devops-mcp-server
 
 ## Project Overview
-MCP (Model Context Protocol) server for DevOps observability. Exposes 35 tools callable by AI agents to query Kubernetes, Prometheus, Loki, and distributed tracing (Tempo/Jaeger).
+MCP (Model Context Protocol) server for DevOps observability. Exposes 48 tools callable by AI agents to query Kubernetes, Prometheus, Loki, and distributed tracing (Tempo/Jaeger).
 
 ## Tech Stack
 - **Runtime:** Node.js >= 24, TypeScript (ESM, `"type": "module"`)
@@ -82,6 +82,36 @@ workload. Without them the model literally could not answer "what image tag runs
 (it pasted kubectl how-tos instead), the proposal model could not follow "keep the current
 repository, change only the tag" (it invented `nginx:latest` for the ingress controller),
 and it nagged users for container names. One listing call now carries everything.
+
+### Detail readers (`describe.ts`) — depth the list tools omit
+`k8s_describe_pod` / `k8s_describe_node` / `k8s_get_endpoints` read ONE object in detail (vs the
+list tools' summary rows). **Deliberately state/config only — NO live CPU/memory usage** (that's
+Prometheus/metrics-server; duplicating it would overlap). Shape functions (`shapePodDetail`,
+`shapeNodeDetail`, `shapeEndpoints`) are pure + unit-tested. describe_pod surfaces the RCA
+ground-truth the list view hides: container `state`/`lastState` → "Terminated: OOMKilled (exit
+137)" / "Waiting: CrashLoopBackOff", conditions, QoS, configured requests/limits. describe_node →
+conditions (MemoryPressure/…), taints, capacity vs allocatable. get_endpoints → ready vs
+not-ready backends (readyCount=0 = the Service has no healthy pods → 503). The agent's system.md
+Failure Mode Playbooks now lead crash/OOM/not-ready/pending/503 with these.
+
+### Tier-2 investigation readers (state/config, no Prometheus overlap)
+Added alongside the detail readers — all read-only K8s state, **no live usage metrics** (that
+stays Prometheus; `k8s_top`/metrics-server was deliberately NOT added to avoid overlap):
+- **`rollout.ts`** — `k8s_get_rollout_status` (deploy/sts/ds, normalized desired/updated/ready/available + conditions + `complete` flag; `shapeRollout` pure+tested, handles the daemonset `numberScheduled` fields) + `k8s_list_replicasets` (rollout history).
+- **`storage.ts`** (+PVCs) — `k8s_list_pvs` (phase/claim/SC) + `k8s_list_storageclasses` (provisioner/default).
+- **`networking.ts`** (+ing/svc) — `k8s_list_network_policies`.
+- **`policy.ts`** — `k8s_list_pdbs` (disruptionsAllowed=0 blocks drains).
+- **`rbac.ts`** — `k8s_get_sa_permissions` (SA → RoleBinding/ClusterRoleBinding → resolved rules; `subjectMatchesSa` pure+tested; no SubjectAccessReview — just reads bindings). RBAC: these read verbs on replicasets/pv/storageclasses/networkpolicies/pdbs/rolebindings/clusterrolebindings/roles/clusterroles — grant `get`/`list` if scoped RBAC is used.
+- Agent system.md gained playbooks: rollout-stuck, PVC-Pending, forbidden (SA perms), traffic-blocked (netpol).
+
+### Discovery + generic reads (gap-close vs public K8s MCP servers)
+Benchmarked against `containers/kubernetes-mcp-server` (manusa) and `Flux159/mcp-server-kubernetes`.
+Added the cheap, investigation-focused gaps; skipped `pods_exec` (security), `pods_top`/`nodes_top`
+(Prometheus overlap), and raw `apply`/`patch` (we do guarded writes + GitOps PR-flow instead):
+- **`get_pod_logs` gained `previous:true` + `since_seconds`** — the crashed/prior container instance. The current logs are the fresh restart; the CrashLoop root cause is in the *previous* one. ~3 lines, no new tool.
+- **`describe_pod` now inlines the pod's recent events** (`shapeEvents`, newest-first, capped 10) — like real `kubectl describe`. Best-effort (`.catch(()=>[])`) so missing events-RBAC never fails the describe. `involvedObject.kind=Pod` in the field selector.
+- **`k8s_get_resource`** (`crds.ts`) — generic get by `apiVersion`+`kind` via `KubernetesObjectApi.read/list` (resolves core-vs-group path via discovery, so `v1` AND `apps/v1` both work). Full object by name, compact list otherwise. For any kind without a dedicated tool. Note: `k8s_get_custom_resources` (CustomObjectsApi) already handled every *grouped* CRD; this adds core + a friendlier apiVersion+kind signature.
+- **`k8s_list_api_resources`** — `CoreV1Api.getAPIResources()` (core v1 kinds, subresources filtered) + `ApisApi.getAPIVersions()` (all groups+versions). Cluster-specific GVK map to drive `k8s_get_resource`. Deliberately does NOT enumerate every group's resources (N discovery calls, low marginal value — the LLM knows standard kinds; CRD plurals come from `k8s_list_crds`).
 
 ### Custom resources (`k8s_get_custom_resources`, read-only)
 Generic reader over `CustomObjectsApi` for ANY CRD's objects (not just the type
