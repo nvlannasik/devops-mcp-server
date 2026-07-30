@@ -61,8 +61,10 @@ export default class AppServer {
   }
 
   private _registerTools(): void {
-    const startupId = crypto.randomUUID();
-    this._registerToolsOn(this.server, startupId);
+    // no id here on purpose: stdio mode used to stamp every tool call for the whole
+    // process lifetime with one startup UUID, so calls were indistinguishable in the log.
+    // Passing none makes each call generate its own (HTTP still uses its per-request id).
+    this._registerToolsOn(this.server);
   }
 
   private _registerToolsOn(server: McpServer, correlationId?: string): void {
@@ -71,7 +73,7 @@ export default class AppServer {
       server.tool(tool.name, tool.description, shape, async (args) => {
         const start = Date.now();
         const inputStr = JSON.stringify(args).slice(0, 200);
-        const cid = correlationId || "unknown";
+        const cid = correlationId ?? crypto.randomUUID();
 
         logWithContext("debug", `Tool called: ${tool.name}`, {
           correlationId: cid,
@@ -107,6 +109,9 @@ export default class AppServer {
             toolName: tool.name,
             status: "error",
             duration,
+            // the args are logged at debug only, so in prod (info) a failure used to
+            // arrive with no way to tell WHICH call broke — repeat them on the error path
+            input: inputStr,
             error: errorMsg,
             ...(expected ? {} : { stack: err instanceof Error ? err.stack : undefined }),
           });

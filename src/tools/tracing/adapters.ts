@@ -43,8 +43,12 @@ export interface TracingAdapter {
   listServices(): Promise<string[]>;
 }
 
-const nanoToIso = (ns: string | number) => new Date(Number(ns) / 1e6).toISOString();
-const microToIso = (us: string | number) => new Date(Number(us) / 1e3).toISOString();
+// A span missing/holding a junk timestamp used to reach `new Date(NaN).toISOString()`,
+// which throws RangeError and killed the whole tool call over one bad span. Return "" —
+// the rest of the trace is still worth showing.
+const isoOrEmpty = (ms: number): string => (Number.isFinite(ms) ? new Date(ms).toISOString() : "");
+const nanoToIso = (ns: string | number | undefined) => isoOrEmpty(Number(ns) / 1e6);
+const microToIso = (us: string | number | undefined) => isoOrEmpty(Number(us) / 1e3);
 
 // ---------- Tempo (Grafana) — TraceQL search + OTLP trace ----------
 
@@ -86,13 +90,14 @@ export function normalizeOtlp(traceId: string, data: any): NormalizedTrace {
       for (const s of scope.spans ?? []) {
         const start = Number(s.startTimeUnixNano);
         const end = Number(s.endTimeUnixNano);
+        const durationMs = (end - start) / 1e6;
         const code = s.status?.code;
         spans.push({
           spanId: s.spanId,
           parentSpanId: s.parentSpanId || undefined,
           service,
           name: s.name,
-          durationMs: (end - start) / 1e6,
+          durationMs: Number.isFinite(durationMs) ? durationMs : 0, // NaN serializes to null and breaks the summary
           startTime: nanoToIso(s.startTimeUnixNano),
           error: code === 2 || code === "STATUS_CODE_ERROR",
         });
@@ -165,11 +170,12 @@ const jaegerError = (tags: any[]) =>
       (t.key === "http.status_code" && Number(t.value) >= 500)
   );
 
-// Trace duration = root span duration; fall back to wall-clock span of the trace.
+// Trace duration = wall-clock span of the trace. Spans whose timestamp didn't parse
+// contribute "" → NaN, and a single NaN poisons Math.max/min into NaN for the whole
+// trace, so they are dropped from the bounds (but still returned in `spans`).
 function summarize(traceId: string, spans: NormalizedSpan[]): NormalizedTrace {
-  const durationMs = spans.length
-    ? Math.max(...spans.map((s) => new Date(s.startTime).getTime() + s.durationMs)) -
-      Math.min(...spans.map((s) => new Date(s.startTime).getTime()))
-    : 0;
+  const starts = spans.map((s) => new Date(s.startTime).getTime()).filter(Number.isFinite);
+  const ends = spans.map((s) => new Date(s.startTime).getTime() + s.durationMs).filter(Number.isFinite);
+  const durationMs = starts.length > 0 && ends.length > 0 ? Math.max(...ends) - Math.min(...starts) : 0;
   return { traceId, durationMs, spanCount: spans.length, spans };
 }

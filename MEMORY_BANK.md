@@ -21,9 +21,12 @@ MCP (Model Context Protocol) server for DevOps observability. Exposes 48 tools c
 - `TRANSPORT=http` — for remote deployment, endpoint `POST /mcp`
 - **Bug fix applied:** HTTP mode creates a new `McpServer` per request (stateless) because the SDK does not allow reconnecting to an already-connected server instance
 
-## Tools (35 total)
+## Tools (48 read-only, 54 with `MCP_ENABLE_WRITE_TOOLS=true`)
 
-### Kubernetes (19)
+Counts verified by importing `src/tools/index.ts` — the tables below list the main ones per
+domain, not every handler. The write tools are the 6 in `kubernetes/write.ts`.
+
+### Kubernetes
 Handlers split per domain under `src/tools/kubernetes/handlers/`:
 
 | File | Tools |
@@ -62,10 +65,11 @@ Handlers split per domain under `src/tools/kubernetes/handlers/`:
 ### withUpstream helper
 All handlers use `withUpstream(service, label, fn)` from `src/utils/errors/index.ts` to wrap try/catch — eliminates duplicated error handling.
 - **`conciseCause()`** (unit-tested) makes upstream errors token-cheap: K8s `ApiException` embeds the whole HTTP exchange (status line, escaped body, headers, audit-id) in `.message` — only the API's own `body.message` ("pods \"x\" not found") is kept; otherwise the message is cut before the `Body:`/`Headers:` dump. The original error stays attached as `cause`.
+- **axios branch (`err.response.data`) — added after it bit every HTTP upstream.** Prometheus, Loki and tracing all go through axios, whose `.message` is only `"Request failed with status code 400"`; the upstream's actual explanation lives in `response.data` (`{status:"error", error:"1:9: parse error..."}` for Prometheus, `{message}` or plain text for Loki). Without this branch a malformed PromQL/LogQL came back to the model as a bare status code, so it learned nothing and **retried the same broken query**. Now: `400 1:9: parse error: unexpected ")"`.
 - **Tool-failure logs skip the stack for expected errors** (`UpstreamError`/`ValidationError` = operational failures → one line); unexpected errors keep the stack — those are actual bugs.
 
 ### Write tools (Guarded Remediation)
-- `kubernetes/write.ts`: **5 typed actions** — `k8s_rollout_restart` (deployment/sts/ds via restartedAt annotation), `k8s_set_image` (one container's image; reports previous → new), `k8s_set_resources` (requests/limits, only provided values patched), `k8s_scale` (deployment/sts only — ds has no replicas; bounded by `MAX_SCALE_DELTA`, scale-to-zero always refused), `k8s_delete_pod` (ONE wedged pod; refused without a recreating controller — `findRecreatingOwner`, unit-tested; Job/naked pods excluded; no GitOps guard, recreation is reconcile-safe). **Never a generic patch tool** — that would be arbitrary kubectl in disguise. Registered ONLY when `MCP_ENABLE_WRITE_TOOLS=true` (conditional spread in `tools/index.ts` — never listed otherwise; a listed-but-refusing tool makes the agent's LLM loop).
+- `kubernetes/write.ts`: **6 typed actions** — `k8s_rollout_restart` (deployment/sts/ds via restartedAt annotation), `k8s_set_image` (one container's image; reports previous → new), `k8s_set_resources` (requests/limits, only provided values patched), `k8s_scale` (deployment/sts only — ds has no replicas; bounded by `MAX_SCALE_DELTA`, scale-to-zero always refused), `k8s_delete_pod` (ONE wedged pod; refused without a recreating controller — `findRecreatingOwner`, unit-tested; Job/naked pods excluded; no GitOps guard, recreation is reconcile-safe), `flux_reconcile` (below). **Never a generic patch tool** — that would be arbitrary kubectl in disguise. Registered ONLY when `MCP_ENABLE_WRITE_TOOLS=true` (conditional spread in `tools/index.ts` — never listed otherwise; a listed-but-refusing tool makes the agent's LLM loop).
 - **Description convention: every write tool MUST start with `[WRITE]`** — the agent filters these out of its agentic loop by that prefix; they are only callable via the approval flow. Breaking the convention silently hands the model unguarded execution.
 - Server-side guardrails (`guardrails.ts`, unit-tested): `ALLOWED_REMEDIATION_NAMESPACES` allowlist (empty = all blocked) + always-blocked `kube-system`/`kube-public`/`kube-node-lease`/`flux-system`. Enforced here because this server holds the cluster creds — agent checks are UX only. RBAC is the floor beneath.
 - Dry-run = K8s server-side `dryRun: "All"` on the same patch (full validation, zero change).
@@ -74,6 +78,12 @@ All handlers use `withUpstream(service, label, fn)` from `src/utils/errors/index
   - **Flux HelmRelease** (`helm.toolkit.fluxcd.io/name`) = **PR-eligible** (v2 target). On a **dry-run** the handler returns a structured **PR preview** `{gitOpsPrEligible, source, helmRelease:{name,namespace}, workload, action, container?, changes:[{field,from,to}], message}` instead of patching — Step 4's agent routes it over SQS to the private-network GitOps handler (`DESIGN_gitops_pr_remediation.md`). On **execute** it refuses (a direct patch is never allowed on a GitOps workload).
   - **Flux Kustomization** (raw-manifest PR flow is a later phase) and **plain Helm** (`managed-by: Helm`, not git-backed) = managed but NOT PR-eligible → refuse with the owning object named.
   - The old `assertNotGitOpsManaged` (throw-only) was replaced by `gitOpsVerdict` + the handler-local `gitOpsPreviewOrRefuse`. `resourceChanges` (exported, tested) builds the set_resources preview changes from the container's current resources.
+- **`flux_reconcile` — the inverse write tool (cluster ← GitOps repo).** Every other write tool introduces new state; this one forces Flux to re-apply the state the repo **already declares**, which is the correct fix when somebody changed the cluster directly (`kubectl set image` on a Flux-managed workload). That is why it is the one spec-affecting action NOT refused by the GitOps guard.
+  - Input is the **workload** (`namespace`/`name`/`kind`), never a HelmRelease. The target release is derived from the workload's own `helm.toolkit.fluxcd.io/*` labels via `gitOpsVerdict`, so the tool cannot be aimed at an arbitrary release (including Flux's own).
+  - **The namespace guard runs on the WORKLOAD's namespace, not the HelmRelease's** — HelmReleases usually live in `flux-system`, which is permanently blocked, so guarding on their namespace would make the tool unusable. The blast radius of a reconcile is whatever the release manages, i.e. the workload namespace. This is the only write tool that touches an object in `flux-system`; the derivation above is what keeps that safe.
+  - Sets BOTH `reconcile.fluxcd.io/requestedAt` and `reconcile.fluxcd.io/forceAt` (= `flux reconcile helmrelease --force`). `requestedAt` alone only re-evaluates the release; in-cluster drift is reverted by the **forced helm upgrade** that `forceAt` triggers.
+  - The HelmRelease API version is read from the CRD's storage version, not hardcoded — Flux moved `v2beta1 → v2beta2 → v2` and clusters here run mixed Flux versions (dev v2.9.0, stg/prd v2.4.0). CRs need `PatchStrategy.MergePatch` (strategic-merge is not supported for custom resources).
+  - **RBAC:** needs `patch` on `helm.toolkit.fluxcd.io/helmreleases` (was `get` only) plus the existing `get` on `customresourcedefinitions`. Added to the dev overlay in `gitops-devops-ai-manifest`; **stg/prd still need it**.
 - **`container` is optional** in `k8s_set_image`/`k8s_set_resources` (`findContainer`, unit-tested): omitted → auto-resolved when the workload has exactly one container; multi-container → refused listing the names; wrong name → refused listing what exists. Rationale: the agent's proposal model cannot know container names (not in its context) and guessed one from the workload name during live testing.
 
 ### Workload listings include containers
@@ -182,6 +192,13 @@ src/
 - `@kubernetes/client-node` v1.x API uses named params objects (not positional args like v0.x)
 - `k8s_list_secrets` returns name + type only — values never exposed
 - HTTP mode: each request creates a new McpServer — small overhead but necessary
+- **Tracing timestamps are defensive now:** a span with a missing/junk `startTimeUnixNano` used to hit `new Date(NaN).toISOString()` → `RangeError`, killing the whole tool call over one bad span; and a single `NaN` poisoned `Math.max/min` in `summarize()` so the trace duration became `NaN`. Invalid timestamps become `""`, are excluded from the duration bounds, and the span is still returned.
+- **Correlation ids:** HTTP mode stamps a per-request UUID (`req.id`) onto every tool call. stdio mode used ONE startup UUID for the whole process lifetime, making calls indistinguishable — it now generates one per call (`correlationId ?? crypto.randomUUID()`).
+- **Tool args are repeated on the failure log.** They were logged at `debug` only, so in prod (`info`) a `Tool failed:` line arrived with no way to tell which call broke.
+
+## Observability
+- `logWithContext(level, msg, {correlationId, toolName, duration, status, ...})` → `ts [LEVEL] k=v ... message`. Stacks come from `winston.format.errors({stack:true})`; expected failures (`UpstreamError`/`ValidationError`) deliberately omit them.
+- The agent's Slack `threadId` does NOT reach this server: `StreamableHTTPClientTransport` accepts headers only at construction, not per call. Join agent↔server logs on tool name + input + timestamp (both sides log all three).
 
 ## Potential Improvements
 - [ ] Add resource pressure metrics to `k8s_list_nodes` (CPU/memory usage vs allocatable)

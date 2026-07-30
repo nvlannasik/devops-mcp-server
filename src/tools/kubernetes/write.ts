@@ -1,4 +1,4 @@
-import { rolloutRestart, setImage, setResources, scale, deletePod } from "./handlers/remediation.js";
+import { rolloutRestart, setImage, setResources, scale, deletePod, fluxReconcile } from "./handlers/remediation.js";
 import type { Tool } from "../types.js";
 
 // [WRITE] tools — registered ONLY when MCP_ENABLE_WRITE_TOOLS=true (see src/tools/index.ts).
@@ -109,6 +109,21 @@ const writeTools: Tool[] = [
       },
     },
     handler: deletePod,
+  },
+  {
+    name: "flux_reconcile",
+    description:
+      "[WRITE] Force Flux to re-apply the GitOps repo's declared state for a workload's HelmRelease " +
+      "(flux reconcile helmrelease --force equivalent), reverting changes made directly in the cluster. " +
+      "Use when the cluster has DRIFTED from Git (someone patched it outside GitOps) — it restores the " +
+      "declared state, it never introduces a new one. Refused for workloads not managed by a Flux " +
+      "HelmRelease. Only in ALLOWED_REMEDIATION_NAMESPACES. dry_run=true validates without changing anything.",
+    inputSchema: {
+      type: "object",
+      required: ["namespace", "name"],
+      properties: { namespace: NS, name: NAME, kind: KIND, dry_run: DRY },
+    },
+    handler: fluxReconcile,
   },
 ];
 
