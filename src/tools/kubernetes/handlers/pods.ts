@@ -28,14 +28,16 @@ export const listPods = (input: unknown) => {
 };
 
 export const getPodLogs = (input: unknown) => {
-  const { pod_name, namespace, container, tail_lines } = NS.extend({
+  const { pod_name, namespace, container, tail_lines, previous, since_seconds } = NS.extend({
     pod_name: z.string().min(1),
     container: z.string().optional(),
     tail_lines: z.number().int().positive().default(100),
+    previous: z.boolean().default(false), // logs from the crashed/prior container instance — the CrashLoop root cause
+    since_seconds: z.number().int().positive().optional(),
   }).parse(input);
   return withUpstream("kubernetes", `Failed to get logs for pod ${pod_name}`, async () => {
     const res = await getApi(k8s.CoreV1Api).readNamespacedPodLog({
-      name: pod_name, namespace, container, tailLines: tail_lines,
+      name: pod_name, namespace, container, tailLines: tail_lines, previous, sinceSeconds: since_seconds,
     });
     return { logs: res };
   });

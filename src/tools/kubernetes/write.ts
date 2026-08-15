@@ -1,4 +1,4 @@
-import { rolloutRestart, setImage, setResources, scale } from "./handlers/remediation.js";
+import { rolloutRestart, setImage, setResources, scale, deletePod, fluxReconcile } from "./handlers/remediation.js";
 import type { Tool } from "../types.js";
 
 // [WRITE] tools — registered ONLY when MCP_ENABLE_WRITE_TOOLS=true (see src/tools/index.ts).
@@ -91,6 +91,39 @@ const writeTools: Tool[] = [
       },
     },
     handler: scale,
+  },
+  {
+    name: "k8s_delete_pod",
+    description:
+      "[WRITE] Delete ONE stuck/wedged pod so its controller recreates it fresh (same spec). " +
+      "Refused for pods without a recreating controller (ReplicaSet/StatefulSet/DaemonSet) — no replacement = outage. " +
+      "GitOps-safe (like rollout_restart). Only in ALLOWED_REMEDIATION_NAMESPACES. " +
+      "dry_run=true validates the target and reports the owning controller without changing anything.",
+    inputSchema: {
+      type: "object",
+      required: ["namespace", "pod"],
+      properties: {
+        namespace: NS,
+        pod: { type: "string", description: "Exact pod name (not the workload name)" },
+        dry_run: DRY,
+      },
+    },
+    handler: deletePod,
+  },
+  {
+    name: "flux_reconcile",
+    description:
+      "[WRITE] Force Flux to re-apply the GitOps repo's declared state for a workload's HelmRelease " +
+      "(flux reconcile helmrelease --force equivalent), reverting changes made directly in the cluster. " +
+      "Use when the cluster has DRIFTED from Git (someone patched it outside GitOps) — it restores the " +
+      "declared state, it never introduces a new one. Refused for workloads not managed by a Flux " +
+      "HelmRelease. Only in ALLOWED_REMEDIATION_NAMESPACES. dry_run=true validates without changing anything.",
+    inputSchema: {
+      type: "object",
+      required: ["namespace", "name"],
+      properties: { namespace: NS, name: NAME, kind: KIND, dry_run: DRY },
+    },
+    handler: fluxReconcile,
   },
 ];
 
