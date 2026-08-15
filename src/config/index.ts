@@ -23,12 +23,12 @@ const config = {
   // cap on items returned by namespaced list tools, so a huge namespace can't produce
   // a response that gets truncated to garbage downstream
   k8sListLimit: parseInt(process.env.K8S_LIST_LIMIT ?? "100"),
+  // Only these two are read: client.ts either loads from the cluster (incluster) or from a
+  // kubeconfig file. There is no hand-rolled apiServer/token/caCert path — the client-node
+  // library builds the connection from one of those two sources, never from loose env vars.
   kubernetes: {
     authMode: process.env.K8S_AUTH_MODE ?? "kubeconfig",
     kubeconfigPath: process.env.K8S_KUBECONFIG_PATH ?? "~/.kube/config",
-    apiServer: process.env.K8S_API_SERVER,
-    token: process.env.K8S_TOKEN,
-    caCertPath: process.env.K8S_CA_CERT_PATH,
   },
   prometheus: {
     url: process.env.PROMETHEUS_URL ?? "http://localhost:9090",

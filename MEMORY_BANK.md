@@ -21,7 +21,7 @@ MCP (Model Context Protocol) server for DevOps observability. Exposes 48 tools c
 - `TRANSPORT=http` — for remote deployment, endpoint `POST /mcp`
 - **Bug fix applied:** HTTP mode creates a new `McpServer` per request (stateless) because the SDK does not allow reconnecting to an already-connected server instance
 
-## Tools (48 read-only, 54 with `MCP_ENABLE_WRITE_TOOLS=true`)
+## Tools (49 read-only, 55 with `MCP_ENABLE_WRITE_TOOLS=true`)
 
 Counts verified by importing `src/tools/index.ts` — the tables below list the main ones per
 domain, not every handler. The write tools are the 6 in `kubernetes/write.ts`.
@@ -31,6 +31,7 @@ Handlers split per domain under `src/tools/kubernetes/handlers/`:
 
 | File | Tools |
 |------|-------|
+| `health.ts` | `k8s_cluster_health` |
 | `namespaces.ts` | `k8s_list_namespaces` |
 | `nodes.ts` | `k8s_list_nodes` |
 | `pods.ts` | `k8s_list_pods`, `k8s_get_pod_logs` |
@@ -46,6 +47,29 @@ Handlers split per domain under `src/tools/kubernetes/handlers/`:
 | `configs.ts` | `k8s_list_configmaps`, `k8s_list_secrets` (values never exposed) |
 
 **`k8s_list_events` special:** has a `since_minutes` parameter to filter events within the last N minutes (post-filtered in handler since K8s API does not support native time filtering).
+
+**`k8s_cluster_health` special — the only cluster-wide *scan*.** Every other list tool is
+per-namespace, so "is anything broken?" cost one call per namespace. Against the agent's
+`MENTION_TOOL_ROUNDS` budget that produced a confident wrong answer: "all healthy" after
+looking at 6 of 20 namespaces, and a *different* 6 on the next run. Raising the round budget
+only moves the sampling boundary while paying on every mention — the fix is one call that
+sees everything.
+- **`config.k8sListLimit` is deliberately NOT applied.** That cap stops a big namespace
+  listing from being truncated into garbage; applying it to a *scan* would reintroduce the
+  exact silent-partial-answer bug this tool exists to kill. Instead it pages through
+  `listPodForAllNamespaces` with `_continue` (`PAGE_LIMIT` 500, `MAX_PODS_SCANNED` 10000).
+- **Honest about incompleteness.** `scanned:{pods,namespaces,complete}` rides on every
+  response; `complete:false` when the ceiling trips, and the tool description tells the model
+  to say so rather than report all-clear. Counts (`unhealthyTotal`, `recentlyRestartedTotal`)
+  are never capped — only the lists (50 / 20), because the agent truncates results at 8000
+  chars and a truncated health report is a lying health report.
+- **Readiness, not phase.** A CrashLoopBackOff pod's phase is `Running` with `ready:false` —
+  phase alone never finds it. Missing `containerStatuses` reads as not-ready. `Succeeded` (Job)
+  pods are counted but never reported as a fault; `deletionTimestamp` pods are flagged
+  `terminating` and sink in the sort so a rolling update's old replicas don't crowd out the
+  real fault.
+- `shapeClusterHealth` is exported pure and unit-tested in `health.test.ts` (13 cases) — same
+  convention as `shapeRollout`. No API mocking.
 
 ### Prometheus (7)
 `prometheus_query`, `prometheus_query_range`, `prometheus_get_alerts`, `prometheus_get_targets`, `prometheus_get_rules`, `prometheus_get_metadata`, `prometheus_list_metric_names`

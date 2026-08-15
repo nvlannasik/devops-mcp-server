@@ -32,8 +32,6 @@ npm test                       # unit tests
 | `MAX_SCALE_DELTA` | Max replica change per `k8s_scale` action (scale-to-zero is always refused) | `5` |
 | `K8S_AUTH_MODE` | `kubeconfig` or `incluster` | `kubeconfig` |
 | `K8S_KUBECONFIG_PATH` | Path to kubeconfig | `~/.kube/config` |
-| `K8S_API_SERVER` | Kubernetes API server URL | — |
-| `K8S_TOKEN` | Service account token | — |
 | `PROMETHEUS_URL` | Prometheus base URL | `http://localhost:9090` |
 | `PROMETHEUS_USERNAME` | Basic auth (optional) | — |
 | `PROMETHEUS_PASSWORD` | Basic auth (optional) | — |
@@ -45,15 +43,16 @@ npm test                       # unit tests
 | `TRACING_USERNAME` | Basic auth (optional) | — |
 | `TRACING_PASSWORD` | Basic auth (optional) | — |
 | `UPSTREAM_TIMEOUT_SECONDS` | Max wait on any upstream (K8s/Prometheus/Loki/tracing) before failing the tool | `30` |
-| `K8S_LIST_LIMIT` | Cap on items returned by namespaced list tools (pods/events/configmaps/secrets) | `100` |
+| `K8S_LIST_LIMIT` | Cap on items returned by namespaced list tools (pods/events/configmaps/secrets). Deliberately **not** applied to `k8s_cluster_health`, which pages through everything | `100` |
 | `LOG_LEVEL` | `error\|warn\|info\|http\|debug` | `debug` (dev), `info` (prod) |
 
-## Tools (48)
+## Tools (49)
 
-### Kubernetes (32)
+### Kubernetes (33)
 
 | Tool | Description |
 |------|-------------|
+| `k8s_cluster_health` | **Whole-cluster pod health in ONE call** — scans every namespace, returns only what is wrong (CrashLoopBackOff/ImagePullBackOff/OOMKilled/Pending/not-ready) + per-phase counts + `scanned` (pods, namespaces, `complete`). Every other list tool sees one namespace, so "is anything broken?" otherwise costs one call per namespace and gets answered from a partial sample. Pass `namespace` only to narrow |
 | `k8s_list_namespaces` | List all namespaces |
 | `k8s_list_nodes` | List nodes with status, roles, and resource capacity |
 | `k8s_describe_pod` | ONE pod's detailed status — container state/lastState (OOMKilled + exit code, CrashLoopBackOff, ImagePullBackOff), conditions, QoS, configured requests/limits, node, **+ the pod's recent events** (like `kubectl describe`). RCA workhorse (no live usage — that's Prometheus) |
@@ -66,7 +65,7 @@ npm test                       # unit tests
 | `k8s_list_network_policies` | NetworkPolicies: podSelector, policyTypes, rule counts — "traffic blocked" investigations |
 | `k8s_list_pdbs` | PodDisruptionBudgets: min/maxUnavailable + disruptionsAllowed (0 blocks node drain) |
 | `k8s_get_sa_permissions` | A ServiceAccount's Role/ClusterRole bindings + resolved rules — for `forbidden` RCA |
-| `k8s_list_pods` | List pods (filter by namespace/label) |
+| `k8s_list_pods` | List pods in ONE namespace (filter by label). For cluster-wide "is anything broken" use `k8s_cluster_health` |
 | `k8s_get_pod_logs` | Get pod logs (tail, `since_seconds`, and `previous:true` for the crashed/prior container instance — CrashLoop root cause) |
 | `k8s_list_deployments` | List Deployments |
 | `k8s_list_statefulsets` | List StatefulSets |

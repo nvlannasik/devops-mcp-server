@@ -3,6 +3,23 @@ import type { Tool } from "../types.js";
 
 const tools: Tool[] = [
   {
+    name: "k8s_cluster_health",
+    description:
+      "Pod health across the WHOLE cluster in one call: scans every namespace and returns only what is wrong (CrashLoopBackOff, ImagePullBackOff, OOMKilled, Pending, not-ready) plus per-phase counts and how many pods/namespaces were actually scanned. " +
+      "USE THIS FIRST for any cluster-wide question — 'is anything broken', 'status check', 'cluster health', 'any pods down'. " +
+      "k8s_list_pods only sees ONE namespace, so answering those questions with it gives a partial answer that reads like a complete one. " +
+      "Pass namespace ONLY to narrow to a single namespace; omit it for the whole cluster. " +
+      "If scanned.complete is false the scan hit its ceiling — say so instead of reporting all-clear.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        namespace: { type: "string", description: "Optional — omit to scan the entire cluster (no default namespace)" },
+        restart_window_minutes: { type: "number", description: "How recent a restart still counts as flapping for a now-ready pod (default: 60)" },
+      },
+    },
+    handler: h.clusterHealth,
+  },
+  {
     name: "k8s_list_namespaces",
     description: "List all namespaces in the Kubernetes cluster",
     inputSchema: { type: "object", properties: {} },
@@ -16,7 +33,7 @@ const tools: Tool[] = [
   },
   {
     name: "k8s_list_pods",
-    description: "List pods in a namespace",
+    description: "List pods in ONE namespace. For 'is anything broken across the cluster' use k8s_cluster_health instead — this tool cannot see past a single namespace",
     inputSchema: {
       type: "object",
       properties: {
