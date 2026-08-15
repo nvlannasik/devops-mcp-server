@@ -22,6 +22,8 @@ architecture and design decisions.
 - **HTTP mode is stateless:** a fresh `McpServer` is created per `/mcp` request.
 - **Auth:** `/mcp` requires `Authorization: Bearer <MCP_AUTH_TOKEN>` when set (constant-time check); `/health` stays open for probes. Unset token in http mode logs a warning — never silently open.
 - **Tracing backends:** Tempo or Jaeger only (adapters in `src/tools/tracing/adapters.ts`). OTel Collector is ingest-only — not a query backend.
+- **`flux_reconcile`** is the one write tool the GitOps guard does not refuse — it restores the repo's declared state instead of introducing new state. Its namespace guard runs on the **workload's** namespace (the HelmRelease usually lives in the permanently-blocked `flux-system`), and the target release is derived from the workload's Flux labels, never named by the caller. Needs `patch` on `helmreleases` — **granted in the dev overlay only**.
+- **`conciseCause()` handles axios errors** (`err.response.data`), not just K8s `ApiException`. Prometheus/Loki/tracing failures otherwise reach the model as a bare `Request failed with status code 400`, and it retries the same broken query.
 
 ## Working style
 - Chat in Indonesian; keep technical/English terms untranslated. **Docs are written in English.**

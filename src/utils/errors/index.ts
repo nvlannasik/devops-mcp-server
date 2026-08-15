@@ -38,7 +38,22 @@ function tryParseJson(s: string): unknown {
 // error stays attached as `cause` for debugging.
 export function conciseCause(err: unknown): string {
   if (err && typeof err === "object") {
-    const e = err as { body?: unknown; message?: string };
+    const e = err as { body?: unknown; message?: string; response?: { status?: number; data?: unknown } };
+
+    // axios (Prometheus / Loki / tracing) puts the upstream's own explanation in
+    // response.data; err.message is only "Request failed with status code 400". Without
+    // this branch a malformed PromQL/LogQL came back as a bare status code, so the model
+    // never learned WHAT was wrong and retried the same broken query.
+    const data = e.response?.data;
+    if (data != null) {
+      const detail = typeof data === "string" ? data : (data as { error?: unknown; message?: unknown }).error ?? (data as { message?: unknown }).message;
+      if (typeof detail === "string" && detail.trim()) {
+        const status = e.response?.status;
+        return `${status ? `${status} ` : ""}${detail.trim()}`.replace(/\s+/g, " ").slice(0, 500);
+      }
+    }
+
+    // K8s client (ApiException) — the API's own message is nested in the JSON body
     const body = typeof e.body === "string" ? tryParseJson(e.body) : e.body;
     const msg = (body as { message?: unknown } | undefined)?.message;
     if (typeof msg === "string" && msg) return msg;
@@ -55,6 +70,9 @@ export async function withUpstream<T>(
   try {
     return await fn();
   } catch (err) {
+    // guardrail refusals are already complete, user-facing sentences — prefixing them
+    // with "Failed to <action> on <target>:" just duplicates the target in Slack
+    if (err instanceof ValidationError) throw err;
     throw new UpstreamError(`${label}: ${conciseCause(err)}`, service, err);
   }
 }

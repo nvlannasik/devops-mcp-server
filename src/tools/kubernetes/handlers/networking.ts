@@ -18,6 +18,24 @@ export const listServices = (input: unknown) => {
   });
 };
 
+// NetworkPolicies applying in a namespace — for "traffic is blocked" investigations. An
+// empty podSelector selects ALL pods; a policyType of Ingress with no matching rule = deny-all.
+export const listNetworkPolicies = (input: unknown) => {
+  const { namespace } = NS.parse(input);
+  return withUpstream("kubernetes", "Failed to list NetworkPolicies", async () => {
+    const res = await getApi(k8s.NetworkingV1Api).listNamespacedNetworkPolicy({ namespace });
+    return res.items.map((np) => ({
+      name: np.metadata!.name,
+      namespace: np.metadata!.namespace,
+      podSelector: Object.keys(np.spec!.podSelector?.matchLabels ?? {}).length ? np.spec!.podSelector!.matchLabels : "(all pods in namespace)",
+      policyTypes: np.spec!.policyTypes, // Ingress / Egress
+      ingressRules: np.spec!.ingress?.length ?? 0,
+      egressRules: np.spec!.egress?.length ?? 0,
+      age: np.metadata!.creationTimestamp,
+    }));
+  });
+};
+
 export const listIngresses = (input: unknown) => {
   const { namespace } = NS.parse(input);
   return withUpstream("kubernetes", "Failed to list ingresses", async () => {
