@@ -132,6 +132,7 @@ export default class AppServer {
   private async _checkUpstreams(): Promise<void> {
     const upstreams: Array<[string, string]> = [
       ["prometheus", config.prometheus.url],
+      ["alertmanager", config.alertmanager.url],
       ["loki", config.loki.url],
     ];
     if (config.tracing.url) upstreams.push([`tracing(${config.tracing.backend})`, config.tracing.url]);

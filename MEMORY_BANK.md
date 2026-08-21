@@ -1,7 +1,7 @@
 # Memory Bank — devops-mcp-server
 
 ## Project Overview
-MCP (Model Context Protocol) server for DevOps observability. Exposes 48 tools callable by AI agents to query Kubernetes, Prometheus, Loki, and distributed tracing (Tempo/Jaeger).
+MCP (Model Context Protocol) server for DevOps observability. Exposes 49 read-only tools callable by AI agents to query Kubernetes, Prometheus, Alertmanager, Loki, and distributed tracing (Tempo/Jaeger).
 
 ## Tech Stack
 - **Runtime:** Node.js >= 24, TypeScript (ESM, `"type": "module"`)
@@ -71,8 +71,31 @@ sees everything.
 - `shapeClusterHealth` is exported pure and unit-tested in `health.test.ts` (13 cases) — same
   convention as `shapeRollout`. No API mocking.
 
-### Prometheus (7)
-`prometheus_query`, `prometheus_query_range`, `prometheus_get_alerts`, `prometheus_get_targets`, `prometheus_get_rules`, `prometheus_get_metadata`, `prometheus_list_metric_names`
+### Prometheus (6)
+`prometheus_query`, `prometheus_query_range`, `prometheus_get_targets`, `prometheus_get_rules`, `prometheus_get_metadata`, `prometheus_list_metric_names`
+
+### Alertmanager (1)
+`alertmanager_get_alerts` — `GET /api/v2/alerts/groups`, under `src/tools/alertmanager/`.
+- **Why it replaced `prometheus_get_alerts`:** `/api/v1/alerts` only sees rules Prometheus itself
+  evaluates. Add a second evaluator (Loki Ruler, Kibana Alerting) and it becomes a silently partial
+  view — it would answer "nothing else is firing" while a log-based alert pages. Every evaluator
+  routes into Alertmanager, and only Alertmanager knows about silences and inhibition. Alerts still
+  `pending` in an evaluator are deliberately invisible: nothing has been routed yet.
+- **Suppression is a LABEL, never a filter** (`alertStatus()`): `active` / `silenced` / `inhibited`,
+  with the raw state passed through for anything a future version adds. A silenced alert is still
+  firing — a human muted the notification, not the problem — so filtering it out would let the agent
+  report "nothing else is wrong", and would let post-remediation verification score a silenced alert
+  as recovered. `silencedBy` rides along so a human can look the silence up.
+- **Groups, not a flat list:** `/alerts/groups` returns the same grouping the Alertmanager webhook
+  delivers, which is what `devops-ai-agent/src/agent/correlation/` already reasons in — a group here
+  lines up with an incident thread instead of having to be re-derived.
+- **Counts complete, detail capped** (`MAX_DETAIL_ALERTS = 60`): the same lesson as
+  `k8s_cluster_health`. Capping the counts would turn a partial answer into one that reads as
+  complete, and "is anything else firing?" is exactly the wrong question to get wrong. `summary`
+  covers every group (deduped by fingerprint — one alert routed to two receivers appears twice);
+  a capped response states `omitted`.
+- `shapeGroups`/`alertStatus` are exported pure and unit-tested in `handlers.test.ts` (11 cases).
+  No HTTP mocking.
 
 ### Loki (6)
 `loki_query`, `loki_query_range`, `loki_get_labels`, `loki_get_label_values`, `loki_get_streams`, `loki_get_stats`
@@ -158,11 +181,11 @@ a `[WRITE]` tool (read-only) — this is v2 GitOps-remediation groundwork (desig
 read the owning HelmRelease before the PR-flow can be built.
 
 ### Startup upstream probe
-`_checkUpstreams()` (app/index.ts) GETs every configured HTTP upstream (Prometheus, Loki, tracing) at startup with a 5s timeout. Any HTTP response counts as reachable (it detects DNS/connect/timeout misconfig, not app health). Unreachable → `Upstream UNREACHABLE` **warn** — deliberately non-fatal: Prometheus being down must not take the k8s tools down with it. Surfaces a wrong `PROMETHEUS_URL` at deploy time instead of at the first tool call. `/health` intentionally does NOT include upstreams (partial availability > all-or-nothing readiness).
+`_checkUpstreams()` (app/index.ts) GETs every configured HTTP upstream (Prometheus, Alertmanager, Loki, tracing) at startup with a 5s timeout. Any HTTP response counts as reachable (it detects DNS/connect/timeout misconfig, not app health). Unreachable → `Upstream UNREACHABLE` **warn** — deliberately non-fatal: Prometheus being down must not take the k8s tools down with it. Surfaces a wrong `PROMETHEUS_URL` at deploy time instead of at the first tool call. `/health` intentionally does NOT include upstreams (partial availability > all-or-nothing readiness).
 
 ### Timeouts & List Limits
 - `UPSTREAM_TIMEOUT_SECONDS` (default 30, converted to ms in config) bounds every upstream call:
-  - Prometheus/Loki: passed as axios `timeout` in `createHttpClient()`
+  - Prometheus/Alertmanager/Loki/tracing: passed as axios `timeout` in `createHttpClient()`
   - K8s list calls: passed as `timeoutSeconds` (server-side)
   - **Universal net:** `app/index.ts` wraps every `tool.handler(args)` in `withTimeout()` (`src/utils/timeout/index.ts`) at the upstream timeout + 5s — catches anything that ignores its own timeout (e.g. pod logs, which have no server-side timeout)
 - `K8S_LIST_LIMIT` (default 100) caps namespaced list responses (`pods`, `events`, `configmaps`, `secrets`) via the K8s `limit` param — a huge namespace used to return a response so large the agent truncated it to 8000 chars and fed the LLM broken JSON. Same pattern can be extended to the remaining list tools.

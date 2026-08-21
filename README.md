@@ -1,6 +1,6 @@
 # DevOps MCP Server
 
-MCP Server for DevOps Observability — integrates with Kubernetes, Prometheus, and Loki.
+MCP Server for DevOps Observability — integrates with Kubernetes, Prometheus, Alertmanager, and Loki.
 
 ## Requirements
 
@@ -35,6 +35,9 @@ npm test                       # unit tests
 | `PROMETHEUS_URL` | Prometheus base URL | `http://localhost:9090` |
 | `PROMETHEUS_USERNAME` | Basic auth (optional) | — |
 | `PROMETHEUS_PASSWORD` | Basic auth (optional) | — |
+| `ALERTMANAGER_URL` | Alertmanager base URL — the source of truth for what is firing (every evaluator routes here, and only it knows about silences/inhibition) | `http://localhost:9093` |
+| `ALERTMANAGER_USERNAME` | Basic auth (optional) | — |
+| `ALERTMANAGER_PASSWORD` | Basic auth (optional) | — |
 | `LOKI_URL` | Loki base URL | `http://localhost:3100` |
 | `LOKI_USERNAME` | Basic auth (optional) | — |
 | `LOKI_PASSWORD` | Basic auth (optional) | — |
@@ -42,7 +45,7 @@ npm test                       # unit tests
 | `TRACING_URL` | Tracing backend base URL (tracing tools error until set) | — |
 | `TRACING_USERNAME` | Basic auth (optional) | — |
 | `TRACING_PASSWORD` | Basic auth (optional) | — |
-| `UPSTREAM_TIMEOUT_SECONDS` | Max wait on any upstream (K8s/Prometheus/Loki/tracing) before failing the tool | `30` |
+| `UPSTREAM_TIMEOUT_SECONDS` | Max wait on any upstream (K8s/Prometheus/Alertmanager/Loki/tracing) before failing the tool | `30` |
 | `K8S_LIST_LIMIT` | Cap on items returned by namespaced list tools (pods/events/configmaps/secrets). Deliberately **not** applied to `k8s_cluster_health`, which pages through everything | `100` |
 | `LOG_LEVEL` | `error\|warn\|info\|http\|debug` | `debug` (dev), `info` (prod) |
 
@@ -86,17 +89,28 @@ npm test                       # unit tests
 | `k8s_list_configmaps` | List ConfigMaps with keys and data |
 | `k8s_list_secrets` | List Secrets (name and type only, values never exposed) |
 
-### Prometheus (7)
+### Prometheus (6)
 
 | Tool | Description |
 |------|-------------|
 | `prometheus_query` | Instant PromQL query |
 | `prometheus_query_range` | Range PromQL query |
-| `prometheus_get_alerts` | Active alerts |
 | `prometheus_get_targets` | Scrape targets health |
-| `prometheus_get_rules` | Alerting and recording rules |
+| `prometheus_get_rules` | Alerting and recording rules (the rule definitions — *what is firing* is an Alertmanager question) |
 | `prometheus_get_metadata` | Metric metadata |
 | `prometheus_list_metric_names` | List all metric names |
+
+### Alertmanager (1)
+
+| Tool | Description |
+|------|-------------|
+| `alertmanager_get_alerts` | **Everything firing right now, cluster-wide**, in Alertmanager's own groups. Each alert carries a `status` label — `active`, `silenced` (a human muted the notification; still firing), `inhibited` (suppressed by a higher-severity alert). Optional `filter` takes Alertmanager label matchers. Returns complete `summary` counts plus per-group detail (detail capped, counts never) |
+
+Why not Prometheus `/api/v1/alerts`: it only sees rules Prometheus itself evaluates, so the moment a
+second evaluator exists (Loki Ruler, Kibana Alerting) it becomes a silently partial view that would
+answer "nothing else is firing" while a log-based alert is paging. Every evaluator routes into
+Alertmanager, and only Alertmanager knows about silences and inhibition. Alerts still `pending` in an
+evaluator are deliberately invisible here — nothing has been routed yet.
 
 ### Loki (6)
 

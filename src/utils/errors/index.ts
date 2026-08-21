@@ -12,10 +12,12 @@ export class ValidationError extends Error {
   }
 }
 
+export type UpstreamService = "kubernetes" | "prometheus" | "alertmanager" | "loki" | "tracing";
+
 export class UpstreamError extends Error {
   constructor(
     message: string,
-    public readonly service: "kubernetes" | "prometheus" | "loki" | "tracing",
+    public readonly service: UpstreamService,
     public readonly cause?: unknown
   ) {
     super(message);
@@ -63,7 +65,7 @@ export function conciseCause(err: unknown): string {
 }
 
 export async function withUpstream<T>(
-  service: "kubernetes" | "prometheus" | "loki" | "tracing",
+  service: UpstreamService,
   label: string,
   fn: () => Promise<T>
 ): Promise<T> {

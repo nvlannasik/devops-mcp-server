@@ -30,12 +30,8 @@ const tools: Tool[] = [
     },
     handler: h.queryRange,
   },
-  {
-    name: "prometheus_get_alerts",
-    description: "Get all active alerts from Prometheus",
-    inputSchema: { type: "object", properties: {} },
-    handler: h.getAlerts,
-  },
+  // No prometheus_get_alerts: "what is firing" is an Alertmanager question — /api/v1/alerts
+  // only sees rules Prometheus itself evaluates. Use alertmanager_get_alerts.
   {
     name: "prometheus_get_targets",
     description: "Get scrape targets and their health status",

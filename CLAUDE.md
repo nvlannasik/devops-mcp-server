@@ -1,7 +1,7 @@
 # devops-mcp-server
 
-MCP (Model Context Protocol) server exposing DevOps tools (Kubernetes, Prometheus, Loki,
-Tracing) consumed by `devops-ai-agent`. Part of a 3-repo system: `devops-ai-agent`,
+MCP (Model Context Protocol) server exposing DevOps tools (Kubernetes, Prometheus,
+Alertmanager, Loki, Tracing) consumed by `devops-ai-agent`. Part of a 3-repo system: `devops-ai-agent`,
 `devops-mcp-server` (this), `llm-worker`.
 
 **Read `MEMORY_BANK.md` before adding tools or touching transport/auth** — it holds the
@@ -23,6 +23,7 @@ architecture and design decisions.
 - **Auth:** `/mcp` requires `Authorization: Bearer <MCP_AUTH_TOKEN>` when set (constant-time check); `/health` stays open for probes. Unset token in http mode logs a warning — never silently open.
 - **Tracing backends:** Tempo or Jaeger only (adapters in `src/tools/tracing/adapters.ts`). OTel Collector is ingest-only — not a query backend.
 - **`flux_reconcile`** is the one write tool the GitOps guard does not refuse — it restores the repo's declared state instead of introducing new state. Its namespace guard runs on the **workload's** namespace (the HelmRelease usually lives in the permanently-blocked `flux-system`), and the target release is derived from the workload's Flux labels, never named by the caller. Needs `patch` on `helmreleases` — **granted in the dev overlay only**.
+- **"What is firing" is an Alertmanager question, never a Prometheus one.** `alertmanager_get_alerts` (`/api/v2/alerts/groups`) replaced `prometheus_get_alerts`, which is deleted: `/api/v1/alerts` only sees rules Prometheus itself evaluates, so adding a second evaluator (Loki Ruler, Kibana) would silently turn it into a partial view answering "nothing else is firing" while a log-based alert pages. Corollary rules: **suppression is a label, not a filter** — `silenced`/`inhibited` alerts come back labelled, because a silenced alert is still firing and dropping it would read as recovery (the agent's post-remediation `alertState()` depends on this); and the `summary` counts are never capped even when the per-group detail is (`MAX_DETAIL_ALERTS`), same reasoning as `k8s_cluster_health`. Alerts still `pending` in an evaluator are deliberately invisible — nothing has been routed yet.
 - **`conciseCause()` handles axios errors** (`err.response.data`), not just K8s `ApiException`. Prometheus/Loki/tracing failures otherwise reach the model as a bare `Request failed with status code 400`, and it retries the same broken query.
 - **`k8s_cluster_health` must never inherit `config.k8sListLimit`.** Every other list tool is per-namespace and capped; this one is the cluster-wide *scan*, so a cap would turn a complete answer back into a partial one that still reads as complete — the exact bug it was built to kill (the agent once said "all healthy" after seeing 6 of 20 namespaces). It pages via `_continue` and reports `scanned.complete:false` if it ever hits its own ceiling. Judge pods on **readiness, not phase** — a CrashLoopBackOff pod's phase is `Running`.
 

@@ -2,7 +2,6 @@ import { z } from "zod";
 import { getClient } from "./client.js";
 import { withUpstream } from "../../utils/errors/index.js";
 
-type AlertRecord = { labels: Record<string, string>; annotations?: Record<string, string>; state: unknown; activeAt: unknown };
 type TargetRecord = { labels: Record<string, string>; health: unknown; lastError: unknown; lastScrape: unknown };
 type RuleRecord = { labels?: Record<string, string>; type: unknown; name: unknown; query: unknown; duration: unknown; state: unknown; health: unknown };
 type GroupRecord = { name: unknown; file: unknown; rules: RuleRecord[] };
@@ -29,19 +28,6 @@ export const queryRange = (input: unknown) => {
     return res.data.data;
   });
 };
-
-export const getAlerts = () =>
-  withUpstream("prometheus", "Failed to get Prometheus alerts", async () => {
-    const res = await getClient().get("/api/v1/alerts");
-    return res.data.data.alerts.map((a: AlertRecord) => ({
-      name: a.labels.alertname,
-      state: a.state,
-      severity: a.labels.severity,
-      summary: a.annotations?.summary,
-      labels: a.labels,
-      activeAt: a.activeAt,
-    }));
-  });
 
 export const getTargets = (input: unknown) => {
   const { state } = z.object({ state: z.enum(["active", "dropped", "any"]).default("active") }).parse(input);

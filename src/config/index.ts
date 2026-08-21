@@ -35,6 +35,14 @@ const config = {
     username: process.env.PROMETHEUS_USERNAME,
     password: process.env.PROMETHEUS_PASSWORD,
   },
+  // The fan-in point for every alert source, and the only one that knows about silences and
+  // inhibition. Prometheus /api/v1/alerts sees Prometheus rules only — see the alertmanager
+  // tool module for why "what else is firing" is asked here instead.
+  alertmanager: {
+    url: process.env.ALERTMANAGER_URL ?? "http://localhost:9093",
+    username: process.env.ALERTMANAGER_USERNAME,
+    password: process.env.ALERTMANAGER_PASSWORD,
+  },
   loki: {
     url: process.env.LOKI_URL ?? "http://localhost:3100",
     username: process.env.LOKI_USERNAME,
