@@ -24,10 +24,10 @@ export function timingSafeEqualStr(a: string, b: string): boolean {
   return crypto.timingSafeEqual(ah, bh);
 }
 
-type PropSchema = { type?: string; enum?: string[]; description?: string };
+type PropSchema = { type?: string; enum?: string[]; description?: string; items?: { type?: string } };
 type InputSchema = { properties?: Record<string, PropSchema>; required?: string[] };
 
-function jsonSchemaToZod(schema: InputSchema): Record<string, ZodTypeAny> {
+export function jsonSchemaToZod(schema: InputSchema): Record<string, ZodTypeAny> {
   if (!schema?.properties) return {};
   return Object.fromEntries(
     Object.entries(schema.properties).map(([key, prop]) => {
@@ -35,6 +35,16 @@ function jsonSchemaToZod(schema: InputSchema): Record<string, ZodTypeAny> {
       if (prop.type === "number") zodType = z.number();
       else if (prop.type === "boolean") zodType = z.boolean();
       else if (prop.enum) zodType = z.enum(prop.enum as [string, ...string[]]);
+      // Arrays had no case here, so they fell through to z.string() — and since the SDK
+      // derives the ADVERTISED schema from this shape, not from tool.inputSchema, an array
+      // param was published to the model as a string. It then sent one, the SDK accepted it,
+      // and the handler's own z.array() rejected it. z.preprocess still publishes as
+      // `type: array`, and absorbs the string a small model sends anyway ("" = no filter).
+      else if (prop.type === "array")
+        zodType = z.preprocess(
+          (v) => (typeof v === "string" ? (v ? [v] : []) : v),
+          z.array(prop.items?.type === "number" ? z.number() : z.string())
+        );
       else zodType = z.string();
 
       if (prop.description) zodType = zodType.describe(prop.description);
