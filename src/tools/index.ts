@@ -3,6 +3,7 @@ import prometheus from "./prometheus/index.js";
 import alertmanager from "./alertmanager/index.js";
 import loki from "./loki/index.js";
 import tracing from "./tracing/index.js";
+import capacity from "./capacity/index.js";
 import writeTools from "./kubernetes/write.js";
 import config from "../config/index.js";
 import type { Tool } from "./types.js";
@@ -15,6 +16,7 @@ const allTools: Tool[] = [
   ...alertmanager,
   ...loki,
   ...tracing,
+  ...capacity,
   ...(config.writeTools.enabled ? writeTools : []),
 ];
 

@@ -133,6 +133,15 @@ Backend-agnostic distributed tracing. Set `TRACING_BACKEND` to `tempo` or `jaege
 | `tracing_get_trace` | Full normalized span tree for one trace ID (service, name, durationMs, parent, error) |
 | `tracing_list_services` | List service names known to the tracing backend |
 
+### Capacity (2)
+
+Cost/sizing questions, in `src/tools/capacity/`. `k8s_recommend_resources` is the one tool that joins two upstreams (K8s API + Prometheus) — the join is done server-side because splitting it across three model-written calls is three chances to be confidently wrong about a number that ends up in an RCA.
+
+| Tool | Description |
+|------|-------------|
+| `k8s_find_unused_resources` | Orphaned/idle objects cluster-wide in one call (the `kor` question): unmounted PVCs, endpoint-less Services, workloads scaled to 0, unreferenced ConfigMaps/Secrets/ServiceAccounts. References are read from running pods **and** every workload pod template, so a scaled-to-zero Deployment does not make its config look unused. A **review** list, never a delete list |
+| `k8s_recommend_resources` | Right-sizing: configured requests/limits vs real usage (CPU p95, peak working set, CFS throttle ratio over `window`, default 24h). Returns the concrete number to change per container plus cluster-wide over-reserved CPU/memory. Flags `oom_risk`, `cpu_throttled`, `*_under_provisioned`, `no_requests`, `over_provisioned`, `no_data` |
+
 ## Project Structure
 
 ```

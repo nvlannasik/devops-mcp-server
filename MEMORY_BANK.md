@@ -21,7 +21,7 @@ MCP (Model Context Protocol) server for DevOps observability. Exposes 49 read-on
 - `TRANSPORT=http` — for remote deployment, endpoint `POST /mcp`
 - **Bug fix applied:** HTTP mode creates a new `McpServer` per request (stateless) because the SDK does not allow reconnecting to an already-connected server instance
 
-## Tools (49 read-only, 55 with `MCP_ENABLE_WRITE_TOOLS=true`)
+## Tools (51 read-only, 57 with `MCP_ENABLE_WRITE_TOOLS=true`)
 
 Counts verified by importing `src/tools/index.ts` — the tables below list the main ones per
 domain, not every handler. The write tools are the 6 in `kubernetes/write.ts`.
@@ -106,6 +106,16 @@ sees everything.
 - **Adapter pattern (`adapters.ts`):** Tempo (TraceQL search + OTLP/JSON trace) and Jaeger (Query API) normalized to one compact shape (`TraceSummary`, `NormalizedSpan`) — keeps tokens bounded (agent truncates at 8000 chars) and lets one prompt playbook serve both. `normalizeOtlp` + `jaegerAdapter`/`tempoAdapter` are unit-tested in `adapters.test.ts`.
 - **Time/units:** handler accepts RFC3339 or Unix seconds; adapters convert (Tempo→seconds, Jaeger→microseconds). `minDurationMs` → `<n>ms` Go-duration string for both. Jaeger search **requires** `service`; Tempo optional.
 - Agent system prompt (`devops-ai-agent/prompts/system.md`) updated: High Latency playbook now chains metrics→`tracing_search`→`tracing_get_trace`, plus a Tracing tool-usage section.
+
+### Capacity (2)
+`k8s_find_unused_resources`, `k8s_recommend_resources` under `src/tools/capacity/` — the cost/sizing pair, modelled on `kor` (github.com/yonahd/kor) but built on the API client already in the image rather than shipping a Go binary.
+- **A false "unused" is a delete recommendation for something live.** So the reference index is built from running pods AND every Deployment/StatefulSet/DaemonSet/Job/CronJob pod template: pods alone report every ConfigMap of a scaled-to-zero Deployment as garbage. Managed objects are skipped by construction, not by name matching where possible — `helm.sh/release.v1` secrets (deleting one breaks `helm rollback`), SA token secrets, `kube-root-ca.crt`, the `default` SA, `ExternalName` Services. Output says it is a **review** list; the tool never proposes a deletion.
+- **`listAll()` in `kubernetes/client.ts`** pages every list to the end for the same reason `k8s_cluster_health` does — but the stake here is higher: a truncated page in a *reference source* does not mean fewer findings, it means a live object reported as unused. If the ceiling is hit, `scanned.complete:false` and the note says every finding is unverified.
+- **`k8s_recommend_resources` is the only tool joining two upstreams.** The join (declared requests/limits from the API server × observed usage from Prometheus) is server-side on purpose: asking a small model to write a correct `quantile_over_time` subquery, parse `512Mi`, and map `orders-api-7c9d4-x2k` back to its Deployment across three calls is three chances to be confidently wrong in an RCA. Pod→workload is longest-name-prefix, not an ownerReferences walk — the naming convention already encodes it.
+- **Heuristic, and it says so.** CPU request = p95 of a 5m rate over `window` × 1.15; memory request = peak working set × 1.2; memory limit = peak × 1.5; max across replicas. The `method` field names the ceiling (no seasonality model — a peak outside `window` sizes too small). A CPU limit is only ever **raised**, never introduced: adding one to a container that runs without it is a regression dressed up as a recommendation. `no_data` is reported as absent, never as zero; `withMetrics: 0` warns that cadvisor is probably not scraped.
+- **Caller input never reaches PromQL unvalidated** — `namespace`/`workload` are DNS-1123-checked and `window` is `/^\d+[mhd]$/`.
+- **RBAC needed nothing new** — every resource these read was already granted for the existing list tools.
+- Agent side needed no code change (tools are auto-discovered); it got one playbook, `devops-ai-agent/prompts/skills/resource-rightsizing.md`, which also matches on tool *evidence* so an OOMKill RCA picks it up mid-loop and turns "consider raising the limit" into `512Mi → 900Mi`.
 
 ## Architecture Patterns
 
@@ -223,6 +233,10 @@ src/
 │   ├── prometheus/
 │   │   ├── client.ts
 │   │   ├── handlers.ts
+│   │   └── index.ts
+│   ├── capacity/             # cost/sizing — the only tools that join K8s + Prometheus
+│   │   ├── unused.ts         # kor-style orphan scan (reference index from pods + templates)
+│   │   ├── rightsizing.ts    # requests/limits vs observed usage
 │   │   └── index.ts
 │   └── loki/
 │       ├── client.ts
