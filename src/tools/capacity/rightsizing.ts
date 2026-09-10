@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { getApi, k8s, listAll } from "../kubernetes/client.js";
+import { blankToUndefined } from "../kubernetes/schemas.js";
 import { getClient } from "../prometheus/client.js";
 import { withUpstream } from "../../utils/errors/index.js";
 
@@ -262,9 +263,9 @@ const NS_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 const WINDOW_RE = /^\d+[mhd]$/;
 
 const RecommendInput = z.object({
-  namespace: z.string().regex(NS_RE).optional(),
-  workload: z.string().regex(NS_RE).optional(),
-  window: z.string().regex(WINDOW_RE).default("24h"),
+  namespace: blankToUndefined(z.string().regex(NS_RE).optional()),
+  workload: blankToUndefined(z.string().regex(NS_RE).optional()),
+  window: blankToUndefined(z.string().regex(WINDOW_RE).default("24h")),
 });
 
 async function vector(promql: string): Promise<Map<string, number>> {

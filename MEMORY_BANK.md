@@ -212,6 +212,15 @@ read the owning HelmRelease before the PR-flow can be built.
 - Covered so far: `withTimeout` / `TimeoutError`
 
 ### Shared Schemas (Kubernetes)
+`blankToUndefined()` wraps any optional/defaulted string so `""` reads as absent. Models fill a
+slot they consider inapplicable with an empty string rather than omitting the key, and every
+constrained optional in this server rejected that: `z.string().regex(...).optional()` and
+`z.string().min(1).optional()` both fail on `""`. Applied at all six sites (`capacity/unused`,
+`capacity/rightsizing` ×3 incl. the defaulted `window`, `handlers/health`, `handlers/remediation`
+×2). The helper states its return type explicitly — `z.preprocess` widens its input to `unknown`,
+and that widening propagates to every *other* field of the enclosing `z.object()`, silently
+turning the handler's own parsed values into `unknown`.
+
 `src/tools/kubernetes/schemas.ts` exports `NS`, `NSLabel`, `NSField` — zod schemas reused across handlers.
 
 ### Config (Flat env vars)

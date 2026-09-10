@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { getApi, k8s, listAll } from "../kubernetes/client.js";
+import { blankToUndefined } from "../kubernetes/schemas.js";
 import { withUpstream } from "../../utils/errors/index.js";
 
 /**
@@ -489,7 +490,7 @@ async function crossCheckCustomResources(wanted: Map<string, Set<string>>): Prom
 const NS_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 
 const UnusedInput = z.object({
-  namespace: z.string().regex(NS_RE).optional(),
+  namespace: blankToUndefined(z.string().regex(NS_RE).optional()),
   include_system_namespaces: z.boolean().default(false),
   cross_check_crds: z.boolean().default(true),
 });

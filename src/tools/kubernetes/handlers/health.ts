@@ -2,6 +2,7 @@ import { z } from "zod";
 import { getApi, k8s } from "../client.js";
 import { withUpstream } from "../../../utils/errors/index.js";
 import config from "../../../config/index.js";
+import { blankToUndefined } from "../schemas.js";
 
 // Cluster-wide pod health in ONE call. Every other list tool in this server is per-namespace,
 // so "is anything broken?" cost one call per namespace — and against the agent's mention tool
@@ -184,7 +185,7 @@ export function shapeClusterHealth(pods: PodLike[], opts: ClusterHealthOptions) 
 // from the tool it reaches for FIRST on every mention, and loop. The value only feeds a
 // multiplication, so rounding a float costs nothing and removes that failure entirely.
 const ClusterHealthInput = z.object({
-  namespace: z.string().min(1).optional(),
+  namespace: blankToUndefined(z.string().min(1).optional()),
   restart_window_minutes: z.number().positive().default(60),
 });
 

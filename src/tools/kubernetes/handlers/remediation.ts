@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { blankToUndefined } from "../schemas.js";
 import { getApi, k8s } from "../client.js";
 import { withUpstream, ValidationError } from "../../../utils/errors/index.js";
 import { assertNamespaceAllowed, assertScaleAllowed, gitOpsVerdict } from "../guardrails.js";
@@ -127,7 +128,7 @@ const SetImage = z.object({
   namespace: z.string().min(1),
   name: z.string().min(1),
   kind: z.enum(KINDS),
-  container: z.string().min(1).optional(), // omitted = auto-resolve for single-container workloads
+  container: blankToUndefined(z.string().min(1).optional()), // omitted (or "") = auto-resolve for single-container workloads
   image: z.string().min(1),
   dry_run: z.boolean().optional(),
 });
@@ -209,7 +210,7 @@ const SetResources = z
     namespace: z.string().min(1),
     name: z.string().min(1),
     kind: z.enum(KINDS),
-    container: z.string().min(1).optional(), // omitted = auto-resolve for single-container workloads
+    container: blankToUndefined(z.string().min(1).optional()), // omitted (or "") = auto-resolve for single-container workloads
     // K8s quantity strings ("250m", "512Mi") — the server-side dry run validates the format
     cpu_request: z.string().optional(),
     memory_request: z.string().optional(),
