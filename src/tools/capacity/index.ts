@@ -13,9 +13,14 @@ const tools: Tool[] = [
       "and ConfigMaps/Secrets/ServiceAccounts nothing references. " +
       "USE THIS for 'what can we clean up', 'unused resources', 'orphaned', 'idle', 'wasted', 'cost'. " +
       "References are read from running pods AND every workload pod template, so a scaled-to-zero Deployment does " +
-      "NOT make its config look unused. " +
-      "It is a REVIEW list, not a delete list — an object read through the API by an operator or CRD looks unused " +
-      "here and is not. Never propose deleting one without naming its owner. " +
+      "NOT make its config look unused. Two more filters run on top: an object with an ownerReference is left out " +
+      "(its controller owns its lifecycle), and every surviving ConfigMap/Secret/PVC/ServiceAccount is cross-checked " +
+      "against EVERY custom resource in the cluster — so a ConfigMap an operator names in its CR spec is removed from " +
+      "the list, and `crossCheck.suppressed` says which CR saved it. " +
+      "ALWAYS read `crossCheck` and `note` before reporting: `crdsUnreadable` is non-empty when RBAC blocked some " +
+      "CRDs, and then the cross-check was PARTIAL — say so instead of calling the list verified. " +
+      "It stays a REVIEW list, not a delete list: an object read by name at runtime leaves no trace anywhere. " +
+      "Never propose deleting one without naming its owner. " +
       "For sizing (requests/limits vs real usage) use k8s_recommend_resources instead — this tool reads no metrics.",
     inputSchema: {
       type: "object",
@@ -24,6 +29,10 @@ const tools: Tool[] = [
         include_system_namespaces: {
           type: "boolean",
           description: "Include kube-* namespaces (default: false — they are full of managed objects that only look unused)",
+        },
+        cross_check_crds: {
+          type: "boolean",
+          description: "Cross-check candidates against every custom resource in the cluster (default: true). Turn off only if the scan is too slow — the result is then unverified against operators",
         },
       },
     },

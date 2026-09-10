@@ -139,7 +139,7 @@ Cost/sizing questions, in `src/tools/capacity/`. `k8s_recommend_resources` is th
 
 | Tool | Description |
 |------|-------------|
-| `k8s_find_unused_resources` | Orphaned/idle objects cluster-wide in one call (the `kor` question): unmounted PVCs, endpoint-less Services, workloads scaled to 0, unreferenced ConfigMaps/Secrets/ServiceAccounts. References are read from running pods **and** every workload pod template, so a scaled-to-zero Deployment does not make its config look unused. A **review** list, never a delete list |
+| `k8s_find_unused_resources` | Orphaned/idle objects cluster-wide in one call (the `kor` question): unmounted PVCs, endpoint-less Services, workloads scaled to 0, unreferenced ConfigMaps/Secrets/ServiceAccounts. Three filters guard the claim: references from running pods **and** every workload pod template; `ownerReferences` (operator-*created*); and a match against every custom resource in the cluster (operator-*referenced*, `cross_check_crds`, default on, needs `rbac.readAllCustomResources`). `crossCheck.crdsUnreadable` non-empty ⇒ the cross-check was partial and the note says so. Still a **review** list, never a delete list |
 | `k8s_recommend_resources` | Right-sizing: configured requests/limits vs real usage (CPU p95, peak working set, CFS throttle ratio over `window`, default 24h). Returns the concrete number to change per container plus cluster-wide over-reserved CPU/memory. Flags `oom_risk`, `cpu_throttled`, `*_under_provisioned`, `no_requests`, `over_provisioned`, `no_data` |
 
 ## Project Structure

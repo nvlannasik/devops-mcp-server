@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { shapeUnused, collectRefs, type UnusedSnapshot } from "./unused.js";
+import {
+  shapeUnused,
+  collectRefs,
+  collectFindings,
+  assembleUnused,
+  mentionedNames,
+  type UnusedSnapshot,
+} from "./unused.js";
 
 const empty: UnusedSnapshot = {
   podSpecs: [],
@@ -92,4 +99,80 @@ test("an incomplete scan says so in the note instead of reporting a clean cluste
   const out = shapeUnused(empty, { namespaces: 4, complete: false });
   assert.equal(out.scanned.complete, false);
   assert.match(out.note, /SCAN INCOMPLETE/);
+});
+
+test("an ownerReference alone keeps an object out of the report — no CR scan needed", () => {
+  // The free half of the cross-check: an operator-CREATED object carries one, and Kubernetes'
+  // own GC deletes it when the owner goes. Costs no API call.
+  const out = shape({
+    secrets: [{ namespace: "app", name: "api-tls", type: "kubernetes.io/tls", owner: "Certificate/api-tls" }],
+    configMaps: [{ namespace: "app", name: "leftover" }],
+  });
+  assert.deepEqual(found(out, "Secret"), []);
+  assert.deepEqual(found(out, "ConfigMap"), ["leftover"]);
+  assert.equal(out.crossCheck, undefined); // not run here
+});
+
+test("a name a custom resource mentions is dropped, and the CR that saved it is named", () => {
+  const findings = collectFindings({
+    ...empty,
+    configMaps: [{ namespace: "app", name: "grafana-dashboard" }, { namespace: "app", name: "real-leftover" }],
+  });
+  const mentions = mentionedNames(
+    [{ namespace: "app", source: "grafanadashboards.grafana.integreatly.org/app/home", obj: { spec: { configMapRef: { name: "grafana-dashboard" } } } }],
+    new Map([["app", new Set(["grafana-dashboard", "real-leftover"])]])
+  );
+  const out = assembleUnused(findings, {
+    namespaces: 1,
+    complete: true,
+    checked: {},
+    crossCheck: { enabled: true, crdsScanned: 12, crdsUnreadable: [], mentions },
+  });
+  assert.deepEqual(found(out, "ConfigMap"), ["real-leftover"]);
+  assert.equal(out.crossCheck!.suppressedTotal, 1);
+  assert.equal(out.crossCheck!.suppressed[0].keptBy, "grafanadashboards.grafana.integreatly.org/app/home");
+  assert.match(out.note, /All 12 CRD kinds/);
+});
+
+test("a mention only counts inside its own namespace, unless the CR is cluster-scoped", () => {
+  const wanted = new Map([["a", new Set(["shared"])], ["b", new Set(["shared"])]]);
+  const scoped = mentionedNames([{ namespace: "a", source: "x/a/one", obj: { ref: "shared" } }], wanted);
+  assert.deepEqual([...scoped.keys()], ["a/shared"]);
+
+  // A ClusterIssuer can name a Secret in any namespace, so the name is protected everywhere.
+  const cluster = mentionedNames([{ source: "clusterissuers.cert-manager.io/ca", obj: { ref: "shared" } }], wanted);
+  assert.deepEqual([...cluster.keys()].sort(), ["a/shared", "b/shared"]);
+});
+
+test("names are matched in map KEYS too, and managedFields is never walked", () => {
+  const wanted = new Map([["app", new Set(["as-key", "buried"])]]);
+  const out = mentionedNames(
+    [{ namespace: "app", source: "x/app/one", obj: { spec: { "as-key": 1 }, metadata: { managedFields: [{ f: "buried" }] } } }],
+    wanted
+  );
+  assert.deepEqual([...out.keys()], ["app/as-key"]);
+});
+
+test("an unreadable CRD downgrades the note instead of claiming a clean cross-check", () => {
+  const out = assembleUnused(
+    collectFindings({ ...empty, configMaps: [{ namespace: "app", name: "leftover" }] }),
+    {
+      namespaces: 1,
+      complete: true,
+      checked: {},
+      crossCheck: { enabled: true, crdsScanned: 9, crdsUnreadable: ["volumes.longhorn.io"], mentions: new Map() },
+    }
+  );
+  assert.match(out.note, /could NOT be read \(RBAC\): volumes\.longhorn\.io/);
+  assert.ok(!/All 9 CRD kinds/.test(out.note));
+});
+
+test("cross-check turned off says so — the list is not a verified one", () => {
+  const out = assembleUnused(collectFindings({ ...empty, configMaps: [{ namespace: "app", name: "leftover" }] }), {
+    namespaces: 1,
+    complete: true,
+    checked: {},
+    crossCheck: { enabled: false, crdsScanned: 0, crdsUnreadable: [], mentions: new Map() },
+  });
+  assert.match(out.note, /were NOT cross-checked/);
 });
