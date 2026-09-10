@@ -326,7 +326,10 @@ export function assembleUnused(
   const note =
     `References come from running pods, every Deployment/StatefulSet/DaemonSet/Job/CronJob pod ` +
     `template, and each object's ownerReferences. ` +
-    (!cc || !cc.enabled
+    (cc?.enabled && cc.crdsScanned === 0 && cc.crdsUnreadable.length === 0
+      ? `No ConfigMap/Secret/PVC/ServiceAccount candidate survived the native scan, so there was nothing ` +
+        `left for the custom-resource cross-check to disprove.`
+      : !cc || !cc.enabled
       ? `Custom resources were NOT cross-checked (cross_check_crds is off), so a ConfigMap or Secret an ` +
         `operator names in its CR spec is in this list and must not be removed.`
       : blind
@@ -641,6 +644,10 @@ export const findUnusedResources = (input: unknown) => {
       crossCheck = { enabled: false, crdsScanned: 0, crdsUnreadable: [], mentions: new Map() };
     } else if (wanted.size > 0) {
       crossCheck = await crossCheckCustomResources(wanted);
+    } else {
+      // Nothing reference-shaped survived, so there is nothing to disprove — but the caller
+      // still needs to know the cross-check was ON, or the note reads as if it had been skipped.
+      crossCheck = { enabled: true, crdsScanned: 0, crdsUnreadable: [], mentions: new Map() };
     }
 
     return assembleUnused(findings, {

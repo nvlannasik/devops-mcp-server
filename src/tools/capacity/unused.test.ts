@@ -176,3 +176,15 @@ test("cross-check turned off says so — the list is not a verified one", () => 
   });
   assert.match(out.note, /were NOT cross-checked/);
 });
+
+test("cross-check ON with no candidates says there was nothing to check, not that it was off", () => {
+  const out = assembleUnused(collectFindings({ ...empty, services: [{ namespace: "app", name: "orders", type: "ClusterIP", addresses: 0 }] }), {
+    namespaces: 1,
+    complete: true,
+    checked: {},
+    crossCheck: { enabled: true, crdsScanned: 0, crdsUnreadable: [], mentions: new Map() },
+  });
+  assert.match(out.note, /nothing\s+left for the custom-resource cross-check to disprove/);
+  assert.ok(!/cross_check_crds is off/.test(out.note));
+  assert.deepEqual(found(out, "Service"), ["orders"]); // state claim, unaffected
+});
