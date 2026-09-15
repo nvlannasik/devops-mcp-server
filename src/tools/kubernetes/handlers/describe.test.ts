@@ -82,3 +82,47 @@ test("shapeEvents returns newest-first and caps the count", () => {
   assert.equal(evts[0].count, 9);
   assert.equal(evts[1].reason, "Unhealthy");
 });
+
+test("a terminating pod carries the fields that say WHY it is stuck", () => {
+  // The cause of a stuck Terminating is a metadata field and nothing else: which controller
+  // still holds a finalizer, and whether the grace period has even elapsed. Without them the
+  // agent can see that a pod is terminating and has nothing to say about why — so it guesses,
+  // and on a cluster with Longhorn it guesses storage every time.
+  const out = shapePodDetail({
+    metadata: {
+      name: "api-1", namespace: "app",
+      deletionTimestamp: "2026-09-15T10:00:00Z",
+      finalizers: ["external-attacher/driver-longhorn-io"],
+    },
+    spec: { nodeName: "w1", terminationGracePeriodSeconds: 30 },
+    status: { phase: "Running" },
+  }) as Record<string, unknown>;
+
+  assert.equal(out.deletionTimestamp, "2026-09-15T10:00:00Z");
+  assert.equal(out.terminationGracePeriodSeconds, 30);
+  assert.deepEqual(out.finalizers, ["external-attacher/driver-longhorn-io"]);
+});
+
+test("a pod that is not being deleted carries none of those keys", () => {
+  // Absent, not null: every describe_pod response would otherwise pay for three dead fields.
+  const out = shapePodDetail({
+    metadata: { name: "api-1", namespace: "app" },
+    spec: { nodeName: "w1" },
+    status: { phase: "Running" },
+  }) as Record<string, unknown>;
+
+  for (const k of ["deletionTimestamp", "terminationGracePeriodSeconds", "finalizers"]) {
+    assert.ok(!(k in out), `${k} should be absent`);
+  }
+});
+
+test("a terminating pod with no finalizer reports an empty list, not a missing one", () => {
+  // The distinction is the whole diagnosis: no finalizer means nothing is blocking deletion,
+  // so the cause is elsewhere (grace period, unreachable node) — that is a different answer
+  // from "we could not tell".
+  const out = shapePodDetail({
+    metadata: { name: "api-1", namespace: "app", deletionTimestamp: "2026-09-15T10:00:00Z" },
+    status: { phase: "Running" },
+  }) as Record<string, unknown>;
+  assert.deepEqual(out.finalizers, []);
+});

@@ -95,7 +95,9 @@ const tools: Tool[] = [
       "termination/waiting reason (OOMKilled, exit code, CrashLoopBackOff, ImagePullBackOff), " +
       "restart counts, pod conditions, QoS, configured requests/limits, node. Use this for " +
       "crash/OOM/not-Ready RCA — it gives the ground-truth reason logs only hint at. (No CPU/mem " +
-      "usage — that's Prometheus.)",
+      "usage — that's Prometheus.) " +
+      "For a pod stuck Terminating it also returns `deletionTimestamp`, `terminationGracePeriodSeconds` " +
+      "and `finalizers` — those three decide the cause, and they are absent on a pod that is not being deleted.",
     inputSchema: {
       type: "object",
       required: ["pod_name"],

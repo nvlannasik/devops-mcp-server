@@ -30,8 +30,8 @@ function describeState(state: ContainerState | undefined): string | undefined {
 }
 
 interface PodLike {
-  metadata?: { name?: string; namespace?: string; creationTimestamp?: string };
-  spec?: { nodeName?: string; containers?: Array<{ name?: string; resources?: { requests?: unknown; limits?: unknown } }> };
+  metadata?: { name?: string; namespace?: string; creationTimestamp?: string; deletionTimestamp?: string; finalizers?: string[] };
+  spec?: { nodeName?: string; terminationGracePeriodSeconds?: number; containers?: Array<{ name?: string; resources?: { requests?: unknown; limits?: unknown } }> };
   status?: {
     phase?: string;
     reason?: string;
@@ -65,6 +65,19 @@ export function shapePodDetail(pod: PodLike) {
     podIP: pod.status?.podIP,
     qosClass: pod.status?.qosClass,
     startTime: pod.status?.startTime,
+    // Deletion state. A pod stuck Terminating is one of the few faults whose cause is a metadata
+    // field and nothing else: `finalizers` names the controller that has not released it, and
+    // deletionTimestamp + terminationGracePeriodSeconds says whether the grace period has even
+    // elapsed yet. Without these the agent can see THAT a pod is terminating (cluster health
+    // reads deletionTimestamp) but has nothing to say about WHY, and guesses the storage layer.
+    // Only present on a pod actually being deleted — absent keys keep the common response small.
+    ...(pod.metadata?.deletionTimestamp
+      ? {
+          deletionTimestamp: pod.metadata.deletionTimestamp,
+          terminationGracePeriodSeconds: pod.spec?.terminationGracePeriodSeconds,
+          finalizers: pod.metadata?.finalizers ?? [],
+        }
+      : {}),
     conditions: pod.status?.conditions?.map((c) => ({ type: c.type, status: c.status, reason: c.reason, message: c.message })),
     initContainers: pod.status?.initContainerStatuses?.map(shapeCs),
     containers: (pod.status?.containerStatuses ?? []).map(shapeCs),
