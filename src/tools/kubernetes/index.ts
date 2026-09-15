@@ -20,6 +20,31 @@ const tools: Tool[] = [
     handler: h.clusterHealth,
   },
   {
+    name: "k8s_correlate_pods",
+    description:
+      "Do several broken pods share ONE cause? Diffs the failing pods against the HEALTHY pods in the same " +
+      "namespace and returns what the broken set shares that no healthy pod has — node, image, ConfigMap, Secret, " +
+      "PVC, ServiceAccount, env variable names. " +
+      "USE THIS whenever more than one pod is failing, BEFORE investigating them one by one: k8s_describe_pod on " +
+      "each and comparing the specs yourself is what turns one shared root cause into eight separate write-ups. " +
+      "Omit `pods` to take every not-ready pod in the namespace (the natural follow-up to k8s_cluster_health). " +
+      "Read `uniqueToBroken` FIRST — `sharedWithHealthy` is mostly noise, because pods of one Deployment share " +
+      "nearly everything. An empty `uniqueToBroken` is a real answer: it says a single shared cause is unlikely, " +
+      "so look at the node, a recent deploy, or an upstream dependency instead. " +
+      "The output is a LEAD, never a conclusion — confirm the shared attribute with its own tool call before " +
+      "naming it as the root cause.",
+    inputSchema: {
+      type: "object",
+      required: ["namespace"],
+      properties: {
+        namespace: { type: "string", description: "Namespace holding the pods" },
+        pods: { type: "array", items: { type: "string" }, description: "Pod names to treat as broken (default: every not-ready pod in the namespace)" },
+        label_selector: { type: "string", description: "Optional label selector to narrow which pods are considered at all" },
+      },
+    },
+    handler: h.correlatePods,
+  },
+  {
     name: "k8s_list_namespaces",
     description: "List all namespaces in the Kubernetes cluster",
     inputSchema: { type: "object", properties: {} },

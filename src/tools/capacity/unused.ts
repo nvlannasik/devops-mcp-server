@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { getApi, k8s, listAll } from "../kubernetes/client.js";
 import { blankToUndefined } from "../kubernetes/schemas.js";
+import { refsOfSpec, type PodSpecLike } from "../kubernetes/podspec.js";
+
+export type { PodSpecLike, ContainerLike } from "../kubernetes/podspec.js";
 import { withUpstream } from "../../utils/errors/index.js";
 
 /**
@@ -12,31 +15,6 @@ import { withUpstream } from "../../utils/errors/index.js";
  * CronJob) as well as from running pods — scanning pods alone calls every ConfigMap of a
  * scaled-to-zero Deployment garbage, which is exactly the mistake that gets someone paged.
  */
-
-interface EnvSource {
-  configMapRef?: { name?: string };
-  secretRef?: { name?: string };
-}
-interface EnvVar {
-  valueFrom?: { configMapKeyRef?: { name?: string }; secretKeyRef?: { name?: string } };
-}
-export interface ContainerLike {
-  env?: EnvVar[];
-  envFrom?: EnvSource[];
-}
-export interface PodSpecLike {
-  serviceAccountName?: string;
-  serviceAccount?: string;
-  containers?: ContainerLike[];
-  initContainers?: ContainerLike[];
-  imagePullSecrets?: Array<{ name?: string }>;
-  volumes?: Array<{
-    configMap?: { name?: string };
-    secret?: { secretName?: string };
-    persistentVolumeClaim?: { claimName?: string };
-    projected?: { sources?: Array<{ configMap?: { name?: string }; secret?: { name?: string } }> };
-  }>;
-}
 
 export interface Meta {
   namespace: string;
@@ -96,32 +74,11 @@ export function collectRefs(specs: Array<{ namespace: string; spec: PodSpecLike 
     serviceAccounts: new Set(),
   };
   for (const { namespace, spec } of specs) {
-    const add = (set: Set<string>, name?: string) => {
-      if (name) set.add(key(namespace, name));
-    };
-    add(refs.serviceAccounts, spec.serviceAccountName ?? spec.serviceAccount);
-    for (const v of spec.volumes ?? []) {
-      add(refs.configMaps, v.configMap?.name);
-      add(refs.secrets, v.secret?.secretName);
-      add(refs.pvcs, v.persistentVolumeClaim?.claimName);
-      // A projected volume is where the interesting ConfigMaps hide once anything mounts a
-      // service-account token alongside its own config.
-      for (const s of v.projected?.sources ?? []) {
-        add(refs.configMaps, s.configMap?.name);
-        add(refs.secrets, s.secret?.name);
-      }
-    }
-    for (const ps of spec.imagePullSecrets ?? []) add(refs.secrets, ps.name);
-    for (const c of [...(spec.initContainers ?? []), ...(spec.containers ?? [])]) {
-      for (const e of c.envFrom ?? []) {
-        add(refs.configMaps, e.configMapRef?.name);
-        add(refs.secrets, e.secretRef?.name);
-      }
-      for (const e of c.env ?? []) {
-        add(refs.configMaps, e.valueFrom?.configMapKeyRef?.name);
-        add(refs.secrets, e.valueFrom?.secretKeyRef?.name);
-      }
-    }
+    const one = refsOfSpec(spec);
+    for (const n of one.configMaps) refs.configMaps.add(key(namespace, n));
+    for (const n of one.secrets) refs.secrets.add(key(namespace, n));
+    for (const n of one.pvcs) refs.pvcs.add(key(namespace, n));
+    if (one.serviceAccount) refs.serviceAccounts.add(key(namespace, one.serviceAccount));
   }
   return refs;
 }

@@ -122,6 +122,28 @@ sees everything.
 - **RBAC needed nothing new** — every resource these read was already granted for the existing list tools.
 - Agent side needed no code change (tools are auto-discovered); it got one playbook, `devops-ai-agent/prompts/skills/resource-rightsizing.md`, which also matches on tool *evidence* so an OOMKill RCA picks it up mid-loop and turns "consider raising the limit" into `512Mi → 900Mi`.
 
+### Correlation (`k8s_correlate_pods`)
+The alert side already grouped (one Alertmanager webhook = one investigation); the missing half
+was seeing what the members of that group have IN COMMON. Same move as `k8s_cluster_health` and
+the capacity tools: aggregate server-side, hand the model a conclusion rather than the raw
+material to re-derive.
+- **Facts are `kind=value` strings so comparison is set algebra** and a new fact type costs one
+  line. Env **variable names** only — a value can be a credential, and the name is what
+  identifies the shared input ("all eight read `DATABASE_URL`").
+- **`uniqueToBroken` is the output that matters**: shared by every broken pod, held by no healthy
+  pod in the namespace. `sharedWithHealthy` is noise — one Deployment's pods share nearly
+  everything, and none of it explains a failure.
+- **The `healthy.length === 0` branch must be evaluated BEFORE `unique.length > 0`.** Its own
+  test caught the original order: in a namespace where every pod is broken, "no healthy pod has
+  this" is vacuously true of the entire shared list, which then reads as a finding. With no
+  control group the tool now returns an empty `uniqueToBroken` and says why.
+- **Empty `uniqueToBroken` is a real answer**, not a dead end — it argues against a single shared
+  cause inside the pod spec and points at the node, a recent deploy, or an upstream dependency.
+- Reference walking lives in `kubernetes/podspec.ts` (`refsOfSpec`), shared with the unused scan.
+  One walker on purpose: a reference hides in a projected volume, an `envFrom`, a single
+  `env[].valueFrom`, an `imagePullSecrets`, and missing one is what makes the unused scan
+  recommend deleting live config.
+
 ## Architecture Patterns
 
 ### withUpstream helper

@@ -2,6 +2,7 @@ export * from "./namespaces.js";
 export * from "./nodes.js";
 export * from "./pods.js";
 export * from "./health.js";
+export * from "./correlate.js";
 export * from "./workloads.js";
 export * from "./batch.js";
 export * from "./networking.js";
