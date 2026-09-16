@@ -124,6 +124,34 @@ const OVERPROVISION_FACTOR = 2; // reserving more than 2x the observed peak is w
 const THROTTLE_ALERT = 0.05;
 const OOM_MARGIN = 0.9;
 
+/**
+ * "This workload did no measurable work" — the input the scale-to-zero quarantine needs, and
+ * the reason the flag exists at all: the unused scan's workload finding is `replicas === 0`,
+ * i.e. ALREADY quarantined, so nothing in this server could name a workload worth quarantining.
+ *
+ * Deliberately CPU-only. The obvious alternative — join `http_server_requests_total` and require
+ * a zero request rate — reads stronger and is weaker: that metric's label is the app's own
+ * `service` name, which is not the workload name, so the join guesses; and a workload with no
+ * HTTP instrumentation returns an empty vector, which is indistinguishable from one with no
+ * traffic. That is the empty-result trap this repo already has a rule about, and here it would
+ * resolve as "scale it to zero".
+ *
+ * CPU does not have that problem. Readiness and liveness probes cost CPU, so a pod that is being
+ * probed is never at literal zero, and anything serving real requests is far above 2 millicores.
+ * What CPU alone misses is a workload that is idle by design and bursts on a schedule — which is
+ * why the flag is refused below IDLE_MIN_WINDOW_HOURS. A day contains a nightly cycle; an hour
+ * of quiet means nothing at all.
+ */
+const IDLE_CPU_CORES = 0.002;
+export const IDLE_MIN_WINDOW_HOURS = 24;
+
+/** `24h` / `90m` / `7d` -> hours. Input is already WINDOW_RE-validated, so the parse cannot fail. */
+export function windowHours(window: string): number {
+  const n = Number(window.slice(0, -1));
+  const unit = window.slice(-1);
+  return unit === "d" ? n * 24 : unit === "m" ? n / 60 : n;
+}
+
 // Flags in the order an on-call cares about them. A container that is BOTH throttled and
 // over-provisioned on memory sorts by its worst flag, not its first.
 const FLAG_RANK = [
@@ -133,6 +161,7 @@ const FLAG_RANK = [
   "cpu_under_provisioned",
   "no_requests",
   "over_provisioned",
+  "idle",
   "no_data",
 ];
 
@@ -152,9 +181,15 @@ export interface Recommendation {
 const MAX_RECOMMENDATIONS = 40;
 
 /** exported for the test — this is the whole judgement of the tool */
-export function buildRecommendations(containers: WorkloadContainer[], usage: Map<string, Usage>) {
+export function buildRecommendations(
+  containers: WorkloadContainer[],
+  usage: Map<string, Usage>,
+  /** Window length. Below IDLE_MIN_WINDOW_HOURS no container is called idle — see IDLE_CPU_CORES. */
+  hours = 0
+) {
   const items: Recommendation[] = [];
   let withData = 0;
+  const idleEligible = hours >= IDLE_MIN_WINDOW_HOURS;
 
   for (const c of containers) {
     const u = usage.get(ckey(c)) ?? {};
@@ -195,6 +230,9 @@ export function buildRecommendations(containers: WorkloadContainer[], usage: Map
     ) {
       flags.push("over_provisioned");
     }
+    // `replicas > 0` is load-bearing, not a tidy-up: a workload already at zero is already
+    // quarantined, and flagging it would offer to scale it to the number it is at.
+    if (idleEligible && c.replicas > 0 && cpu < IDLE_CPU_CORES) flags.push("idle");
 
     const cpuReq = cpu * CPU_HEADROOM;
     const memReq = mem * MEM_HEADROOM;
@@ -255,7 +293,73 @@ export function buildRecommendations(containers: WorkloadContainer[], usage: Map
     },
     recommendationsTotal: items.length,
     recommendations: items.slice(0, MAX_RECOMMENDATIONS),
+    // LAST on purpose, and it is not cosmetic. The agent compacts any tool result over 8000
+    // chars by keeping the head and the tail and dropping the middle — and this response passes
+    // that on any real cluster, since `recommendations` alone runs to 40 entries. Sitting between
+    // `potentialRequestSavings` and `recommendations`, `idleWorkloads` was in exactly the slice
+    // that gets dropped, so the agent's quarantine gate (which fails closed on a missing key)
+    // would have refused every quarantine on precisely the clusters where cleanup matters, and
+    // looked like a working feature that simply never fired.
+    idleWorkloads: idleWorkloadsOf(items),
   };
+}
+
+export interface IdleWorkload {
+  /**
+   * `namespace/Kind/workload`. Exists so the agent's quarantine gate can ask "did a run in this
+   * thread actually measure THIS workload idle?" with one exact substring test against the tool
+   * output it already stores — instead of re-parsing a JSON blob that the context compactor may
+   * have truncated. Truncation then makes the gate stricter, never looser: a cut-off result
+   * fails the test and the proposal is dropped.
+   */
+  key: string;
+  kind: string;
+  namespace: string;
+  workload: string;
+  replicas: number;
+  /**
+   * The bound the verdict rests on, not a measurement — and deliberately so. `observed.cpuP95`
+   * on the rows below is built by `fmtCpu`, which floors at `10m` because it exists to size
+   * REQUESTS and nothing should ever be requested below that. Quoting it here would print
+   * "cpuP95 10m" next to a claim that every container stayed under 2m, and a human reading the
+   * approval card would be right to conclude the tool is broken. The exact sub-millicore figure
+   * decides nothing; being under the floor is the whole finding.
+   */
+  cpuP95Below: string;
+}
+
+/**
+ * Rolls the per-container `idle` flag up to the workload, because scaling is a workload-level
+ * action and a sidecar that is quiet says nothing about the container beside it.
+ *
+ * EVERY container with data must be idle, and at least one must have data. A workload with one
+ * idle container and one unmeasured container is not idle — it is half-measured, and the half
+ * that is missing is exactly where the traffic would show.
+ *
+ * Exported for the test.
+ */
+export function idleWorkloadsOf(items: Recommendation[]): IdleWorkload[] {
+  const byWorkload = new Map<string, Recommendation[]>();
+  for (const r of items) {
+    const k = `${r.namespace}/${r.kind}/${r.workload}`;
+    byWorkload.set(k, [...(byWorkload.get(k) ?? []), r]);
+  }
+  const out: IdleWorkload[] = [];
+  for (const group of byWorkload.values()) {
+    const measured = group.filter((r) => !r.flags.includes("no_data"));
+    if (measured.length === 0 || measured.length !== group.length) continue;
+    if (!measured.every((r) => r.flags.includes("idle"))) continue;
+    const first = measured[0];
+    out.push({
+      key: `${first.namespace}/${first.kind}/${first.workload}`,
+      kind: first.kind,
+      namespace: first.namespace,
+      workload: first.workload,
+      replicas: first.replicas,
+      cpuP95Below: `${IDLE_CPU_CORES * 1000}m`,
+    });
+  }
+  return out.sort((a, b) => `${a.namespace}/${a.workload}`.localeCompare(`${b.namespace}/${b.workload}`));
 }
 
 const NS_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
@@ -358,7 +462,8 @@ export const recommendResources = (input: unknown) => {
       ),
     ]);
 
-    const built = buildRecommendations(containers, aggregateUsage(containers, { cpu, mem, throttle }));
+    const hours = windowHours(window);
+    const built = buildRecommendations(containers, aggregateUsage(containers, { cpu, mem, throttle }), hours);
 
     return {
       window,
@@ -369,6 +474,14 @@ export const recommendResources = (input: unknown) => {
         `This is a percentile heuristic, NOT VPA: it has no seasonality model, so a workload whose real peak ` +
         `falls outside ${window} will be sized too small — widen \`window\` before acting on a surprisingly low number. ` +
         `A CPU limit is only ever raised, never introduced.` +
+        ` \`idleWorkloads\` lists workloads whose every measured container stayed under ${IDLE_CPU_CORES * 1000}m ` +
+        `CPU for the whole window — the candidates for a reversible scale-to-zero quarantine. It is a claim ` +
+        `about THIS WINDOW and nothing else: a workload that bursts on a schedule longer than ${window} looks ` +
+        `identical to one that does nothing.` +
+        (hours < IDLE_MIN_WINDOW_HOURS
+          ? ` No workload was assessed for idleness: \`window\` is ${window} and idleness needs at least ` +
+            `${IDLE_MIN_WINDOW_HOURS}h, because an hour of quiet is not evidence of anything. Re-run with \`window: "24h"\`.`
+          : "") +
         (built.scanned.withMetrics === 0
           ? ` WARNING: not one container had metrics — cadvisor (container_cpu_usage_seconds_total) is probably not being scraped, so every number here is absent, not zero.`
           : ""),

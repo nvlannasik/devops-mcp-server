@@ -173,17 +173,19 @@ const Scale = z.object({
   name: z.string().min(1),
   kind: z.enum(SCALABLE_KINDS),
   replicas: z.number().int().min(0), // 0 passes zod so the guardrail can give the real message
+  // Opt-in, never inferred from replicas===0 — see assertScaleAllowed.
+  quarantine: z.boolean().default(false),
   dry_run: z.boolean().optional(),
 });
 
 export const scale = (input: unknown) => {
-  const { namespace, name, kind, replicas, dry_run } = Scale.parse(input);
+  const { namespace, name, kind, replicas, quarantine, dry_run } = Scale.parse(input);
   assertNamespaceAllowed(namespace, config.writeTools.allowedNamespaces);
 
   return withUpstream("kubernetes", `Failed to scale ${kind} \`${namespace}/${name}\``, async () => {
     const current = await readWorkload(kind, name, namespace);
     const currentReplicas = (current.spec as { replicas?: number }).replicas ?? 0;
-    assertScaleAllowed(currentReplicas, replicas, config.writeTools.maxScaleDelta); // delta bound + no scale-to-zero (applies to the PR path too)
+    assertScaleAllowed(currentReplicas, replicas, config.writeTools.maxScaleDelta, { quarantine }); // delta bound + scale-to-zero rule (applies to the PR path too)
     const preview = gitOpsPreviewOrRefuse(current.metadata?.labels, `${kind} \`${namespace}/${name}\``, !!dry_run, {
       workload: `${kind}/${namespace}/${name}`,
       action: "scale",

@@ -52,3 +52,41 @@ test("gitOpsVerdict: unmanaged workloads (and missing labels) are not managed", 
   assert.equal(gitOpsVerdict(undefined, "deployment `ns/app`").managed, false);
   assert.equal(gitOpsVerdict({ "app.kubernetes.io/managed-by": "kubectl" }, "deployment `ns/app`").managed, false);
 });
+
+// ── Scale-to-zero quarantine ─────────────────────────────────────────────────
+// The one exception to the zero block, and the reason it is opt-in: removing a workload that
+// "looks unused" is irreversible against a cluster with no backups, while taking it to zero is
+// one action to undo. A wrong quarantine costs a scale-back; a wrong delete costs a restore
+// nobody can perform.
+
+test("zero stays blocked unless the caller explicitly asks for a quarantine", () => {
+  assert.throws(() => assertScaleAllowed(3, 0, 100), /Scaling to zero is blocked/);
+  assert.throws(() => assertScaleAllowed(3, 0, 100, {}), /Scaling to zero is blocked/);
+  assert.throws(() => assertScaleAllowed(3, 0, 100, { quarantine: false }), /Scaling to zero is blocked/);
+  assert.doesNotThrow(() => assertScaleAllowed(3, 0, 100, { quarantine: true }));
+});
+
+// The refusal has to name the way through, or the model retries the same call forever.
+test("the refusal names the evidence and the flag that would satisfy it", () => {
+  assert.throws(() => assertScaleAllowed(3, 0, 100), /idleWorkloads/);
+  assert.throws(() => assertScaleAllowed(3, 0, 100), /quarantine=true/);
+});
+
+test("a quarantine still obeys MAX_SCALE_DELTA", () => {
+  assert.throws(() => assertScaleAllowed(20, 0, 5, { quarantine: true }), /exceeds MAX_SCALE_DELTA \(5\)/);
+  assert.doesNotThrow(() => assertScaleAllowed(3, 0, 5, { quarantine: true }));
+});
+
+test("quarantining something already at zero is refused rather than executed as a no-op", () => {
+  assert.throws(() => assertScaleAllowed(0, 0, 100, { quarantine: true }), /already — nothing to quarantine/);
+});
+
+test("a negative or fractional replica target is refused before anything else", () => {
+  assert.throws(() => assertScaleAllowed(3, -1, 100, { quarantine: true }), /not a non-negative whole number/);
+  assert.throws(() => assertScaleAllowed(3, 1.5, 100), /not a non-negative whole number/);
+});
+
+// quarantine must not become a general bypass — it unlocks zero, nothing else.
+test("quarantine does not relax any other rule", () => {
+  assert.throws(() => assertScaleAllowed(1, 9, 5, { quarantine: true }), /exceeds MAX_SCALE_DELTA/);
+});

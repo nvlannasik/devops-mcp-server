@@ -188,3 +188,71 @@ test("cross-check ON with no candidates says there was nothing to check, not tha
   assert.ok(!/cross_check_crds is off/.test(out.note));
   assert.deepEqual(found(out, "Service"), ["orders"]); // state claim, unaffected
 });
+
+// ── Provenance ───────────────────────────────────────────────────────────────
+// Who declared the object decides what to DO about the finding, and the two answers point in
+// opposite directions: a Flux/Helm-managed object cannot be removed through the API at all
+// (Flux restores it) and its being declared is evidence the finding is a false positive, while
+// an undeclared one is the only genuine orphan shape. They used to look identical here.
+
+const bare = { namespaces: 1, complete: true, checked: {} };
+
+test("a finding carries who declared it and when it was created", () => {
+  const out = assembleUnused(
+    collectFindings({
+      ...empty,
+      configMaps: [
+        { namespace: "app", name: "from-flux", managedBy: "flux", createdAt: "2026-07-04T11:20:31.000Z" },
+        { namespace: "app", name: "from-helm", managedBy: "helm", createdAt: "2026-08-01T09:00:00.000Z" },
+        { namespace: "app", name: "hand-applied", managedBy: "none", createdAt: "2026-02-14T02:11:00.000Z" },
+      ],
+    }),
+    bare
+  );
+  const byName = new Map(out.findings.map((f) => [f.name, f]));
+  assert.equal(byName.get("from-flux")!.managedBy, "flux");
+  assert.equal(byName.get("from-helm")!.managedBy, "helm");
+  assert.equal(byName.get("hand-applied")!.managedBy, "none");
+  assert.equal(byName.get("hand-applied")!.createdAt, "2026-02-14T02:11:00.000Z");
+});
+
+test("the declared/undeclared split is counted, and counted over every finding not just the shown ones", () => {
+  const many = Array.from({ length: 20 }, (_, i) => ({
+    namespace: "app",
+    name: `cm-${String(i).padStart(2, "0")}`,
+    managedBy: (i < 15 ? "flux" : "none") as const,
+  }));
+  const out = assembleUnused(collectFindings({ ...empty, configMaps: many }), bare);
+  assert.equal(out.truncated, true, "the fixture must exceed PER_KIND_CAP for this to mean anything");
+  assert.ok(out.findings.length < 20, "listing was not truncated");
+  assert.deepEqual(out.provenance, { declaredInGit: 15, undeclared: 5 });
+});
+
+test("an object a custom resource saved is not counted in either provenance bucket", () => {
+  const out = assembleUnused(
+    collectFindings({
+      ...empty,
+      configMaps: [
+        { namespace: "app", name: "saved-by-cr", managedBy: "none" },
+        { namespace: "app", name: "real-leftover", managedBy: "none" },
+      ],
+    }),
+    {
+      ...bare,
+      crossCheck: {
+        enabled: true,
+        crdsScanned: 3,
+        crdsUnreadable: [],
+        mentions: new Map([["app/saved-by-cr", "widgets.example.com/app/w1"]]),
+      },
+    }
+  );
+  assert.deepEqual(out.provenance, { declaredInGit: 0, undeclared: 1 });
+});
+
+test("the note explains what each managedBy value means for removal", () => {
+  const out = assembleUnused(collectFindings({ ...empty, configMaps: [{ namespace: "app", name: "x" }] }), bare);
+  assert.match(out.note, /Flux restores it on the next reconcile/);
+  assert.match(out.note, /removal is a PR against the GitOps repo/);
+  assert.match(out.note, /evidence the finding is wrong/);
+});

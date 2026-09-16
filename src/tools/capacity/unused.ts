@@ -16,11 +16,34 @@ import { withUpstream } from "../../utils/errors/index.js";
  * scaled-to-zero Deployment garbage, which is exactly the mistake that gets someone paged.
  */
 
+/**
+ * Who put this object in the cluster, as the object itself records it.
+ *
+ * The most decision-relevant fact about a finding, and the scan had no answer for it. Two cases
+ * that need OPPOSITE handling looked identical in the output:
+ *
+ * - `flux` / `helm` — something DECLARES this. Deleting it through the API is a no-op: Flux puts
+ *   it back on the next reconcile. The durable removal is a PR against the repo. And a human
+ *   having deliberately declared it is evidence the finding is a FALSE POSITIVE, because the
+ *   scan's blind spots — an object read through the API, a CRD it could not cross-check — are
+ *   exactly the cases where someone declares a thing no workload ever mounts.
+ * - `none` — nobody declares it and no ownerReference explains it. Somebody ran `kubectl apply`
+ *   and moved on. This is the only shape that is a genuine orphan.
+ *
+ * Free: both markers are already in the list response we page through, so this costs no extra
+ * API call. Flux stamps its label on everything a Kustomization applies; Helm writes its
+ * annotation on every object in a release.
+ */
+export type ManagedBy = "flux" | "helm" | "none";
+
 export interface Meta {
   namespace: string;
   name: string;
   /** "Certificate/api-tls" when another object controls this one's lifecycle. */
   owner?: string;
+  managedBy?: ManagedBy;
+  /** RFC-3339 creationTimestamp. An orphan's age turns "unused" into "unused since". */
+  createdAt?: string;
 }
 export interface SecretLike extends Meta {
   type?: string;
@@ -98,6 +121,9 @@ export interface Finding {
   reason: string;
   /** Set when an ownerReference already explains the object — it never reaches the report. */
   ownerSuppressed?: string;
+  /** See ManagedBy. Absent only for kinds whose snapshot entry predates this field. */
+  managedBy?: ManagedBy;
+  createdAt?: string;
 }
 
 // Per KIND, not per response: a flat cap would silently drop a whole category (the two orphaned
@@ -129,8 +155,16 @@ export function collectFindings(snap: UnusedSnapshot): Finding[] {
   // the owner goes. Costs no extra API call — the field was already in the list response. It does
   // NOT cover an operator that merely REFERENCES a hand-made object by name; that is what the
   // CR scan in the handler is for.
-  const push = (f: Finding, owner?: string) => {
-    findings.push(owner ? { ...f, ownerSuppressed: `owned by ${owner}` } : f);
+  // Provenance rides along from the snapshot entry rather than being passed per call site: every
+  // one of them already has the object in hand, and a field copied by hand at six call sites is
+  // a field that is missing at the seventh.
+  const push = (f: Finding, src?: { owner?: string; managedBy?: ManagedBy; createdAt?: string }) => {
+    findings.push({
+      ...f,
+      ...(src?.managedBy ? { managedBy: src.managedBy } : {}),
+      ...(src?.createdAt ? { createdAt: src.createdAt } : {}),
+      ...(src?.owner ? { ownerSuppressed: `owned by ${src.owner}` } : {}),
+    });
   };
 
   for (const p of snap.pvcs) {
@@ -140,7 +174,7 @@ export function collectFindings(snap: UnusedSnapshot): Finding[] {
       namespace: p.namespace,
       name: p.name,
       reason: `not mounted by any pod or workload template (phase ${p.phase ?? "unknown"}${p.capacity ? `, ${p.capacity}` : ""}) — this one costs storage every day it survives`,
-    }, p.owner);
+    }, p);
   }
 
   for (const s of snap.services) {
@@ -153,7 +187,7 @@ export function collectFindings(snap: UnusedSnapshot): Finding[] {
       namespace: s.namespace,
       name: s.name,
       reason: "no endpoint addresses at all (ready or not-ready) — either nothing matches its selector, or every backing pod is gone",
-    });
+    }, s);
   }
 
   for (const w of snap.workloads) {
@@ -166,7 +200,7 @@ export function collectFindings(snap: UnusedSnapshot): Finding[] {
         w.kind === "DaemonSet"
           ? "desired count is 0 — its nodeSelector/affinity matches no node in this cluster"
           : "scaled to 0 replicas — running nothing, still holding its config, PVCs and quota",
-    });
+    }, w);
   }
 
   for (const c of snap.configMaps) {
@@ -177,7 +211,7 @@ export function collectFindings(snap: UnusedSnapshot): Finding[] {
       namespace: c.namespace,
       name: c.name,
       reason: "no pod or workload template mounts it or reads it via env/envFrom",
-    }, c.owner);
+    }, c);
   }
 
   for (const s of snap.secrets) {
@@ -188,7 +222,7 @@ export function collectFindings(snap: UnusedSnapshot): Finding[] {
       namespace: s.namespace,
       name: s.name,
       reason: "no pod, workload template, ServiceAccount or Ingress TLS block names it",
-    }, s.owner);
+    }, s);
   }
 
   for (const sa of snap.serviceAccounts) {
@@ -199,7 +233,7 @@ export function collectFindings(snap: UnusedSnapshot): Finding[] {
       namespace: sa.namespace,
       name: sa.name,
       reason: "no pod or workload template runs as it (its RoleBindings are dead weight too)",
-    }, sa.owner);
+    }, sa);
   }
 
   return findings;
@@ -299,13 +333,28 @@ export function assembleUnused(
     ` Still a review list, not a delete list: an object read by name at runtime (a \`kubectl create ` +
     `--from-file\`, an app reading its own ConfigMap through the API) leaves no trace anywhere. Name ` +
     `the owner before proposing removal.` +
+    ` Each finding carries \`managedBy\`: \`flux\`/\`helm\` means the cluster is not the place to remove ` +
+    `it — Flux restores it on the next reconcile, so removal is a PR against the GitOps repo — AND it ` +
+    `is evidence the finding is wrong, because somebody declared that object on purpose. \`none\` means ` +
+    `nothing declares it and no owner explains it: that is the only genuine orphan shape here.` +
     (opts.complete ? "" : " SCAN INCOMPLETE — hit its item ceiling, so some references were never read; treat every finding as unverified.");
+
+  // The split that decides what to DO about a finding, promoted out of the per-row field so it
+  // cannot be missed: a declared object is removed by a PR (and is probably a false positive of
+  // this scan), an undeclared one is the only genuine orphan. Counted over `findings`, not
+  // `shown` — the per-kind cap truncates the listing, never the counts.
+  const declared = findings.filter((f) => f.managedBy === "flux" || f.managedBy === "helm").length;
+  const provenance = {
+    declaredInGit: declared,
+    undeclared: findings.length - declared,
+  };
 
   return {
     scanned: { namespaces: opts.namespaces, complete: opts.complete },
     checked: opts.checked,
     unusedTotal: Object.values(counts).reduce((a, b) => a + b, 0),
     counts,
+    provenance,
     findings: shown,
     truncated,
     crossCheck: cross,
@@ -458,6 +507,24 @@ const ownerOf = (m?: { ownerReferences?: Array<{ kind?: string; name?: string }>
   return o?.kind ? `${o.kind}/${o.name}` : undefined;
 };
 
+// See ManagedBy. Flux checked first: a Flux-managed HelmRelease produces objects carrying BOTH
+// markers, and the actionable answer there is the Kustomization's repo path, not the Helm release.
+const FLUX_LABEL = "kustomize.toolkit.fluxcd.io/name";
+const HELM_ANNOTATION = "meta.helm.sh/release-name";
+
+interface ProvenanceMeta {
+  labels?: Record<string, string>;
+  annotations?: Record<string, string>;
+  creationTimestamp?: Date | string;
+}
+
+const provenanceOf = (m?: ProvenanceMeta): { managedBy: ManagedBy; createdAt?: string } => ({
+  managedBy: m?.labels?.[FLUX_LABEL] ? "flux" : m?.annotations?.[HELM_ANNOTATION] ? "helm" : "none",
+  // Normalised here rather than at the reader: the client hands back a Date for some kinds and
+  // the raw string for others, and `${date}` is a local-time sentence, not a timestamp.
+  createdAt: m?.creationTimestamp ? new Date(m.creationTimestamp).toISOString() : undefined,
+});
+
 const podSpec = (spec: unknown): PodSpecLike => (spec ?? {}) as PodSpecLike;
 
 export const findUnusedResources = (input: unknown) => {
@@ -534,12 +601,18 @@ export const findUnusedResources = (input: unknown) => {
 
     const snap: UnusedSnapshot = {
         podSpecs,
-        configMaps: meta(cms.items).map((c) => ({ namespace: c.metadata!.namespace!, name: c.metadata!.name!, owner: ownerOf(c.metadata) })),
+        configMaps: meta(cms.items).map((c) => ({
+          namespace: c.metadata!.namespace!,
+          name: c.metadata!.name!,
+          owner: ownerOf(c.metadata),
+          ...provenanceOf(c.metadata),
+        })),
         secrets: meta(secrets.items).map((s) => ({
           namespace: s.metadata!.namespace!,
           name: s.metadata!.name!,
           type: s.type,
           owner: ownerOf(s.metadata),
+          ...provenanceOf(s.metadata),
         })),
         pvcs: meta(pvcs.items).map((p) => ({
           namespace: p.metadata!.namespace!,
@@ -547,6 +620,7 @@ export const findUnusedResources = (input: unknown) => {
           phase: p.status?.phase,
           capacity: p.status?.capacity?.storage ?? p.spec?.resources?.requests?.storage,
           owner: ownerOf(p.metadata),
+          ...provenanceOf(p.metadata),
         })),
         serviceAccounts: meta(sas.items).map((s) => ({
           namespace: s.metadata!.namespace!,
@@ -554,12 +628,14 @@ export const findUnusedResources = (input: unknown) => {
           secrets: (s.secrets ?? []).map((r) => r.name).filter((n): n is string => !!n),
           imagePullSecrets: (s.imagePullSecrets ?? []).map((r) => r.name).filter((n): n is string => !!n),
           owner: ownerOf(s.metadata),
+          ...provenanceOf(s.metadata),
         })),
         services: meta(svcs.items).map((s) => ({
           namespace: s.metadata!.namespace!,
           name: s.metadata!.name!,
           type: s.spec?.type,
           addresses: addressesBySvc.get(key(s.metadata!.namespace!, s.metadata!.name!)) ?? 0,
+          ...provenanceOf(s.metadata),
         })),
         workloads: [
           ...meta(deploys.items).map((d) => ({
@@ -567,18 +643,21 @@ export const findUnusedResources = (input: unknown) => {
             namespace: d.metadata!.namespace!,
             name: d.metadata!.name!,
             replicas: d.spec?.replicas ?? 0,
+            ...provenanceOf(d.metadata),
           })),
           ...meta(sets.items).map((s) => ({
             kind: "StatefulSet",
             namespace: s.metadata!.namespace!,
             name: s.metadata!.name!,
             replicas: s.spec?.replicas ?? 0,
+            ...provenanceOf(s.metadata),
           })),
           ...meta(daemons.items).map((d) => ({
             kind: "DaemonSet",
             namespace: d.metadata!.namespace!,
             name: d.metadata!.name!,
             replicas: d.status?.desiredNumberScheduled ?? 0,
+            ...provenanceOf(d.metadata),
           })),
         ],
         ingressSecrets,

@@ -1,6 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseCpu, parseMem, aggregateUsage, buildRecommendations, type WorkloadContainer } from "./rightsizing.js";
+import {
+  parseCpu,
+  parseMem,
+  aggregateUsage,
+  buildRecommendations,
+  idleWorkloadsOf,
+  windowHours,
+  IDLE_MIN_WINDOW_HOURS,
+  type WorkloadContainer,
+} from "./rightsizing.js";
 
 const MiB = 1024 * 1024;
 const container = (over: Partial<WorkloadContainer> = {}): WorkloadContainer => ({
@@ -104,4 +113,80 @@ test("a container with no requests at all is flagged before the merely wasteful 
   );
   assert.equal(out.recommendations[0].workload, "bare");
   assert.ok(out.recommendations[0].flags.includes("no_requests"));
+});
+
+// ── Idle detection ───────────────────────────────────────────────────────────
+// This flag is the ONLY input to the scale-to-zero quarantine, so a false positive here is a
+// workload taken offline by an approval card. Everything below is about refusing to emit it.
+
+const usageOf = (c: WorkloadContainer, cpuCores: number, memBytes = 100 * MiB) =>
+  new Map([[`${c.namespace}/${c.kind}/${c.workload}/${c.container}`, { cpuCores, memBytes }]]);
+
+test("window strings convert to hours in the units the schema allows", () => {
+  assert.equal(windowHours("24h"), 24);
+  assert.equal(windowHours("7d"), 168);
+  assert.equal(windowHours("90m"), 1.5);
+});
+
+test("a workload doing nothing for a day is idle", () => {
+  const c = container({ replicas: 2 });
+  const out = buildRecommendations([c], usageOf(c, 0.0005), 24);
+  assert.ok(out.recommendations[0].flags.includes("idle"), out.recommendations[0].flags.join(", "));
+  assert.deepEqual(out.idleWorkloads, [
+    { key: "app/Deployment/orders-api", kind: "Deployment", namespace: "app", workload: "orders-api", replicas: 2, cpuP95Below: "2m" },
+  ]);
+});
+
+// An hour of quiet is not evidence. A workload that bursts nightly is quiet for most of any
+// short window, and this flag is what would take it down.
+test("a short window never produces an idle verdict", () => {
+  const c = container();
+  for (const hours of [0, 1, IDLE_MIN_WINDOW_HOURS - 1]) {
+    const out = buildRecommendations([c], usageOf(c, 0), hours);
+    assert.equal(out.recommendations[0].flags.includes("idle"), false, `idle at ${hours}h`);
+    assert.deepEqual(out.idleWorkloads, [], `idle workload at ${hours}h`);
+  }
+});
+
+// Probes cost CPU, so a pod being probed is never at literal zero — but a pod serving real
+// requests is far above the floor. This is the line between those two.
+test("a workload serving real traffic is not idle", () => {
+  const c = container();
+  const out = buildRecommendations([c], usageOf(c, 0.05), 24);
+  assert.equal(out.recommendations[0].flags.includes("idle"), false);
+  assert.deepEqual(out.idleWorkloads, []);
+});
+
+// Already at zero: flagging it would offer to scale it to the number it is at.
+test("a workload already scaled to zero is not an idle candidate", () => {
+  const c = container({ replicas: 0 });
+  const out = buildRecommendations([c], usageOf(c, 0), 24);
+  assert.equal(out.recommendations[0].flags.includes("idle"), false);
+  assert.deepEqual(out.idleWorkloads, []);
+});
+
+// The roll-up is where a half-measured workload has to be refused: the container with no
+// samples is exactly where the traffic would have shown.
+test("a workload is idle only when EVERY container is measured and idle", () => {
+  const api = container({ container: "api" });
+  const side = container({ container: "sidecar" });
+
+  const bothIdle = buildRecommendations([api, side], new Map([
+    ...usageOf(api, 0), ...usageOf(side, 0),
+  ]), 24);
+  assert.equal(bothIdle.idleWorkloads.length, 1);
+
+  const oneBusy = buildRecommendations([api, side], new Map([
+    ...usageOf(api, 0), ...usageOf(side, 0.4),
+  ]), 24);
+  assert.deepEqual(oneBusy.idleWorkloads, [], "one busy container did not save the workload");
+
+  // sidecar has no samples at all -> no_data -> the workload is half-measured, not idle
+  const oneUnmeasured = buildRecommendations([api, side], usageOf(api, 0), 24);
+  assert.deepEqual(oneUnmeasured.idleWorkloads, [], "an unmeasured container did not block the verdict");
+});
+
+test("a workload with no metrics at all is never idle", () => {
+  const c = container();
+  assert.deepEqual(idleWorkloadsOf(buildRecommendations([c], new Map(), 24).recommendations), []);
 });

@@ -77,7 +77,9 @@ const writeTools: Tool[] = [
     name: "k8s_scale",
     description:
       "[WRITE] Change the replica count of a Deployment/StatefulSet (DaemonSets have no replicas). " +
-      "Bounded by MAX_SCALE_DELTA; scaling to zero is always refused. " +
+      "Bounded by MAX_SCALE_DELTA. Scaling to zero is refused unless quarantine=true, which is only " +
+      "for a workload k8s_recommend_resources listed under idleWorkloads — a reversible alternative to " +
+      "deleting something that looks unused. " +
       "Only in ALLOWED_REMEDIATION_NAMESPACES. dry_run=true validates without changing anything.",
     inputSchema: {
       type: "object",
@@ -86,7 +88,13 @@ const writeTools: Tool[] = [
         namespace: NS,
         name: NAME,
         kind: { type: "string", enum: ["deployment", "statefulset"], description: "Workload kind (no daemonset)" },
-        replicas: { type: "number", description: "Target replica count (>= 1)" },
+        replicas: { type: "number", description: "Target replica count (>= 1, or 0 with quarantine=true)" },
+        quarantine: {
+          type: "boolean",
+          description:
+            "Allow replicas=0 as a reversible quarantine of a workload measured idle over >=24h. " +
+            "Undo by scaling back to the original count. Never set this to retire a workload you have not measured.",
+        },
         dry_run: DRY,
       },
     },

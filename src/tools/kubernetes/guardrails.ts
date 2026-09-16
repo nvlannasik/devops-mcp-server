@@ -9,9 +9,40 @@ const ALWAYS_BLOCKED = new Set(["kube-system", "kube-public", "kube-node-lease",
 
 // Blast-radius limit for k8s_scale: bounded delta, and scale-to-zero is always blocked
 // (that's an outage, not a remediation).
-export function assertScaleAllowed(current: number, target: number, maxDelta: number): void {
-  if (target < 1) {
-    throw new ValidationError("Scaling to zero is blocked — that is an outage, not a remediation");
+/**
+ * `quarantine` is the ONE way past the scale-to-zero block, and it is opt-in at the call site
+ * rather than inferred, so "take this workload offline" can never be the accidental reading of
+ * a replica number.
+ *
+ * Why the exception exists: removing an unused workload is irreversible against a cluster with
+ * no backups, while scaling it to zero is one action to undo. A wrong quarantine costs a
+ * scale-back; a wrong delete costs a restore nobody can perform. So the destructive answer to
+ * "this looks unused" is the reversible one.
+ *
+ * What it does NOT relax: the namespace allowlist, the dry-run, the GitOps verdict (a
+ * Flux-managed workload still routes to a PR rather than a patch Flux would revert), and the
+ * human approval click. And the agent may only ask for it against a workload a
+ * `k8s_recommend_resources` run in the same thread listed under `idleWorkloads` — this server
+ * cannot check that, which is exactly why the flag is explicit and shows up in the card.
+ */
+export function assertScaleAllowed(
+  current: number,
+  target: number,
+  maxDelta: number,
+  opts: { quarantine?: boolean } = {}
+): void {
+  if (target < 0 || !Number.isInteger(target)) {
+    throw new ValidationError(`Replica target ${target} is not a non-negative whole number`);
+  }
+  if (target === 0 && !opts.quarantine) {
+    throw new ValidationError(
+      "Scaling to zero is blocked — that is an outage, not a remediation. It is allowed only as a " +
+        "reversible quarantine of a workload measured idle (k8s_recommend_resources -> idleWorkloads), " +
+        "and then only with quarantine=true."
+    );
+  }
+  if (target === 0 && current === 0) {
+    throw new ValidationError(`${current} replicas already — nothing to quarantine`);
   }
   const delta = Math.abs(target - current);
   if (delta > maxDelta) {
