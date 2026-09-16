@@ -2,6 +2,7 @@ import { z } from "zod";
 import { getApi, k8s, listAll } from "../kubernetes/client.js";
 import { blankToUndefined } from "../kubernetes/schemas.js";
 import { refsOfSpec, type PodSpecLike } from "../kubernetes/podspec.js";
+import { provenanceOf } from "../kubernetes/provenance.js";
 
 export type { PodSpecLike, ContainerLike } from "../kubernetes/podspec.js";
 import { withUpstream } from "../../utils/errors/index.js";
@@ -16,25 +17,10 @@ import { withUpstream } from "../../utils/errors/index.js";
  * scaled-to-zero Deployment garbage, which is exactly the mistake that gets someone paged.
  */
 
-/**
- * Who put this object in the cluster, as the object itself records it.
- *
- * The most decision-relevant fact about a finding, and the scan had no answer for it. Two cases
- * that need OPPOSITE handling looked identical in the output:
- *
- * - `flux` / `helm` — something DECLARES this. Deleting it through the API is a no-op: Flux puts
- *   it back on the next reconcile. The durable removal is a PR against the repo. And a human
- *   having deliberately declared it is evidence the finding is a FALSE POSITIVE, because the
- *   scan's blind spots — an object read through the API, a CRD it could not cross-check — are
- *   exactly the cases where someone declares a thing no workload ever mounts.
- * - `none` — nobody declares it and no ownerReference explains it. Somebody ran `kubectl apply`
- *   and moved on. This is the only shape that is a genuine orphan.
- *
- * Free: both markers are already in the list response we page through, so this costs no extra
- * API call. Flux stamps its label on everything a Kustomization applies; Helm writes its
- * annotation on every object in a release.
- */
-export type ManagedBy = "flux" | "helm" | "none";
+// Provenance lives in kubernetes/provenance.ts: the unused scan REPORTS it and
+// k8s_delete_orphan REFUSES without it, and two copies of that rule drift apart.
+export type { ManagedBy } from "../kubernetes/provenance.js";
+import type { ManagedBy } from "../kubernetes/provenance.js";
 
 export interface Meta {
   namespace: string;
@@ -349,6 +335,20 @@ export function assembleUnused(
     undeclared: findings.length - declared,
   };
 
+  // `namespace/kind/name` for every finding nothing declares — the deletable set, and the only
+  // thing `k8s_delete_orphan` may be proposed against.
+  //
+  // A flat list of short strings, LAST in the response, for the same reason `idleWorkloads` is:
+  // the agent drops the MIDDLE of any tool result over 8000 chars, and `findings` is the bulk of
+  // this one. A key buried in a finding row would be cut on exactly the clusters worth cleaning,
+  // and the agent's gate fails closed — so the capability would look present and never fire.
+  // Restricted to `none` on purpose: a key here is a statement that removal is even the right
+  // shape of answer, which it never is for something Flux or Helm declares.
+  const orphanKeys = findings
+    .filter((f) => f.managedBy === "none")
+    .map((f) => `${f.namespace}/${f.kind}/${f.name}`)
+    .sort();
+
   return {
     scanned: { namespaces: opts.namespaces, complete: opts.complete },
     checked: opts.checked,
@@ -359,6 +359,7 @@ export function assembleUnused(
     truncated,
     crossCheck: cross,
     note,
+    orphanKeys,
   };
 }
 
@@ -507,23 +508,7 @@ const ownerOf = (m?: { ownerReferences?: Array<{ kind?: string; name?: string }>
   return o?.kind ? `${o.kind}/${o.name}` : undefined;
 };
 
-// See ManagedBy. Flux checked first: a Flux-managed HelmRelease produces objects carrying BOTH
-// markers, and the actionable answer there is the Kustomization's repo path, not the Helm release.
-const FLUX_LABEL = "kustomize.toolkit.fluxcd.io/name";
-const HELM_ANNOTATION = "meta.helm.sh/release-name";
 
-interface ProvenanceMeta {
-  labels?: Record<string, string>;
-  annotations?: Record<string, string>;
-  creationTimestamp?: Date | string;
-}
-
-const provenanceOf = (m?: ProvenanceMeta): { managedBy: ManagedBy; createdAt?: string } => ({
-  managedBy: m?.labels?.[FLUX_LABEL] ? "flux" : m?.annotations?.[HELM_ANNOTATION] ? "helm" : "none",
-  // Normalised here rather than at the reader: the client hands back a Date for some kinds and
-  // the raw string for others, and `${date}` is a local-time sentence, not a timestamp.
-  createdAt: m?.creationTimestamp ? new Date(m.creationTimestamp).toISOString() : undefined,
-});
 
 const podSpec = (spec: unknown): PodSpecLike => (spec ?? {}) as PodSpecLike;
 

@@ -1,4 +1,4 @@
-import { rolloutRestart, setImage, setResources, scale, deletePod, fluxReconcile } from "./handlers/remediation.js";
+import { rolloutRestart, setImage, setResources, scale, deletePod, deleteOrphan, fluxReconcile } from "./handlers/remediation.js";
 import type { Tool } from "../types.js";
 
 // [WRITE] tools — registered ONLY when MCP_ENABLE_WRITE_TOOLS=true (see src/tools/index.ts).
@@ -117,6 +117,36 @@ const writeTools: Tool[] = [
       },
     },
     handler: deletePod,
+  },
+  {
+    name: "k8s_delete_orphan",
+    description:
+      "[WRITE] Delete ONE abandoned object that nothing declares — a ConfigMap, Service, " +
+      "ServiceAccount, or a Deployment/StatefulSet already at 0 replicas. " +
+      "Only for objects k8s_find_unused_resources listed under `orphanKeys` (managedBy: none). " +
+      "REFUSED when anything declares it (Flux/Helm — remove it from the GitOps repo instead), when an " +
+      "ownerReference explains it, when a workload still runs replicas, or when it is younger than 14 days. " +
+      "Secrets and PersistentVolumeClaims are NOT supported and never will be: a Secret's backup is its " +
+      "credentials and a PVC's manifest is not its data. " +
+      "Returns `backupManifest` — the object as `kubectl apply` takes it back, captured immediately " +
+      "before deletion. That is the entire undo, so store it. " +
+      "Only in ALLOWED_REMEDIATION_NAMESPACES. dry_run=true returns the manifest and every refusal " +
+      "without deleting anything.",
+    inputSchema: {
+      type: "object",
+      required: ["namespace", "name", "kind"],
+      properties: {
+        namespace: NS,
+        name: NAME,
+        kind: {
+          type: "string",
+          enum: ["configmap", "service", "serviceaccount", "deployment", "statefulset"],
+          description: "Object kind. No secret, no persistentvolumeclaim — neither can be restored from a manifest.",
+        },
+        dry_run: DRY,
+      },
+    },
+    handler: deleteOrphan,
   },
   {
     name: "flux_reconcile",
