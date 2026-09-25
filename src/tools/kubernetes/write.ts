@@ -1,5 +1,6 @@
 import { rolloutRestart, setImage, setResources, scale, deletePod, deleteOrphan, fluxReconcile } from "./handlers/remediation.js";
 import type { Tool } from "../types.js";
+import config from "../../config/index.js";
 
 // [WRITE] tools — registered ONLY when MCP_ENABLE_WRITE_TOOLS=true (see src/tools/index.ts).
 // Conditional REGISTRATION, not a runtime guard: the agent caches listTools() at startup,
@@ -125,7 +126,16 @@ const writeTools: Tool[] = [
       "ServiceAccount, or a Deployment/StatefulSet already at 0 replicas. " +
       "Only for objects k8s_find_unused_resources listed under `orphanKeys` (managedBy: none). " +
       "REFUSED when anything declares it (Flux/Helm — remove it from the GitOps repo instead), when an " +
-      "ownerReference explains it, when a workload still runs replicas, or when it is younger than 14 days. " +
+      // Derived, never written twice. The floor became configurable so a benchmark case could
+      // reach this path at all, and a description still saying "14 days" while the server enforced
+      // 0 is not cosmetic drift: the MODEL reads this text and refuses on it. Measured 2026-09-24,
+      // before the floor moved — the agent declined to offer a cleanup and quoted the 14-day rule
+      // back, and this description was the only place it could have learned the number.
+      (config.writeTools.minOrphanAgeDays > 0
+        ? `ownerReference explains it, when a workload still runs replicas, or when it is younger than ${config.writeTools.minOrphanAgeDays} days. `
+        : "ownerReference explains it, or when a workload still runs replicas. There is no minimum age on this " +
+          "server right now, so do not refuse one for being new — but state how old it is, because age is the " +
+          "only evidence of abandonment there is. ") +
       "Secrets and PersistentVolumeClaims are NOT supported and never will be: a Secret's backup is its " +
       "credentials and a PVC's manifest is not its data. " +
       "Returns `backupManifest` — the object as `kubectl apply` takes it back, captured immediately " +
