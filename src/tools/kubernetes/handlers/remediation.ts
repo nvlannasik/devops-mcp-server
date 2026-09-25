@@ -431,8 +431,13 @@ type OrphanKind = (typeof ORPHAN_KINDS)[number];
 /**
  * A `managedBy: none` object younger than this is not abandoned, it is new. Somebody is probably
  * mid-way through building the thing that will reference it, and the scan cannot see an intent.
+ *
+ * Read from config (`MIN_ORPHAN_AGE_DAYS`, default 14) rather than fixed, so the benchmark can
+ * exercise the delete path at all — Kubernetes owns `creationTimestamp`, so a case cannot age its
+ * own fixture. Read at CALL time, not once at module load, so a test that changes it does not
+ * depend on import order.
  */
-const MIN_ORPHAN_AGE_DAYS = 14;
+const minOrphanAgeDays = (): number => config.writeTools.minOrphanAgeDays;
 
 const DeleteOrphan = z.object({
   namespace: z.string().min(1),
@@ -563,8 +568,8 @@ export function orphanRefusal(c: OrphanCheck, now: number = Date.now()): string 
   if (age === null) {
     return `${target} has no creationTimestamp, so its age cannot be established — and age is the only evidence of abandonment available here.`;
   }
-  if (age < MIN_ORPHAN_AGE_DAYS) {
-    return `${target} is ${age} day(s) old. Under ${MIN_ORPHAN_AGE_DAYS} days that is not abandoned, it is new — somebody is probably still building what will reference it.`;
+  if (age < minOrphanAgeDays()) {
+    return `${target} is ${age} day(s) old. Under ${minOrphanAgeDays()} days that is not abandoned, it is new — somebody is probably still building what will reference it.`;
   }
   return null;
 }

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildResourcesPatch, findContainer, findRecreatingOwner, resourceChanges, orphanRefusal, restorableManifest, type OrphanCheck } from "./remediation.js";
+import config from "../../../config/index.js";
 
 test("resourceChanges maps provided fields to {field,from,to}, from current or (unset)", () => {
   const cur = { requests: { cpu: "100m" }, limits: { memory: "512Mi" } };
@@ -95,6 +96,41 @@ test("an object younger than the minimum age is refused, and told its age", () =
   assert.match(orphanRefusal(orphan({ createdAt: daysAgo(3) }), NOW)!, /is 3 day\(s\) old/);
   assert.match(orphanRefusal(orphan({ createdAt: daysAgo(13) }), NOW)!, /not abandoned, it is new/);
   assert.equal(orphanRefusal(orphan({ createdAt: daysAgo(14) }), NOW), null, "the boundary itself must pass");
+});
+
+// The floor is configurable because the benchmark cannot age a fixture — Kubernetes owns
+// creationTimestamp — so a case that exercises the delete path has to lower it instead. What must
+// NOT change with it: the refusal still names the floor it applied, so whoever reads the message
+// can tell which one was in force rather than assuming 14.
+test("the minimum age is the configured one, and the message says which", () => {
+  const original = config.writeTools.minOrphanAgeDays;
+  try {
+    config.writeTools.minOrphanAgeDays = 0;
+    assert.equal(orphanRefusal(orphan({ createdAt: daysAgo(0) }), NOW), null, "a floor of 0 admits a brand-new object");
+
+    config.writeTools.minOrphanAgeDays = 30;
+    const refusal = orphanRefusal(orphan({ createdAt: daysAgo(20) }), NOW);
+    assert.match(refusal!, /is 20 day\(s\) old/);
+    assert.match(refusal!, /Under 30 days/, "the message quotes the floor in force, not the default");
+  } finally {
+    config.writeTools.minOrphanAgeDays = original;
+  }
+});
+
+// Everything else this tool refuses on is independent of the floor, and lowering it must not be a
+// way round any of them — that is the whole reason age is one check among five.
+test("a lowered floor relaxes nothing but the age", () => {
+  const original = config.writeTools.minOrphanAgeDays;
+  try {
+    config.writeTools.minOrphanAgeDays = 0;
+    const fresh = { createdAt: daysAgo(0) };
+    assert.match(orphanRefusal(orphan({ ...fresh, managedBy: "flux" }), NOW)!, /declared by flux/);
+    assert.match(orphanRefusal(orphan({ ...fresh, owner: "Certificate/api-tls" }), NOW)!, /owned by/);
+    assert.match(orphanRefusal(orphan({ ...fresh, kind: "deployment", replicas: 2 }), NOW)!, /still runs 2 replica/);
+    assert.match(orphanRefusal(orphan({ createdAt: undefined }), NOW)!, /no creationTimestamp/);
+  } finally {
+    config.writeTools.minOrphanAgeDays = original;
+  }
 });
 
 // Fails closed: no timestamp means the only abandonment evidence available is missing.

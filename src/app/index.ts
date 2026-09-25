@@ -67,6 +67,21 @@ export default class AppServer {
     if (config.writeTools.enabled) {
       const allowed = config.writeTools.allowedNamespaces;
       logWithContext("warn", `WRITE TOOLS ENABLED — allowed namespaces: ${allowed.length ? allowed.join(", ") : "(none — all blocked until ALLOWED_REMEDIATION_NAMESPACES is set)"}`, {});
+      // A relaxed orphan floor announces itself, every boot, for as long as it stays relaxed.
+      // Age is the only evidence of abandonment `k8s_delete_orphan` has, the benchmark and
+      // production share this server, and a guard lowered for a test run stays lowered until
+      // somebody puts it back — which is the kind of thing found six weeks later by accident
+      // unless the process says so itself.
+      const floor = config.writeTools.minOrphanAgeDays;
+      if (floor < 14) {
+        logWithContext(
+          "warn",
+          `ORPHAN AGE FLOOR LOWERED — MIN_ORPHAN_AGE_DAYS=${floor} (default 14). k8s_delete_orphan will accept objects ` +
+            `${floor === 0 ? "of any age, including ones created seconds ago" : `as young as ${floor} day(s)`}. ` +
+            `Age is the only evidence of abandonment this server has; restore the default once the run that needed it is over.`,
+          {}
+        );
+      }
     }
   }
 

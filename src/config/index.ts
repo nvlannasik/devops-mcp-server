@@ -19,6 +19,21 @@ const config = {
       .filter(Boolean),
     // k8s_scale blast-radius limit: max |new - current| replicas per action
     maxScaleDelta: parseInt(process.env.MAX_SCALE_DELTA ?? "5"),
+    /**
+     * How old a `managedBy: none` object must be before `k8s_delete_orphan` will touch it.
+     *
+     * Age is the ONLY evidence of abandonment this server has: provenance, ownership and replica
+     * count all answer "is something managing this", and only age answers "was this left behind,
+     * or is somebody still building what will reference it". The cluster it deletes from keeps no
+     * backups of its own (k3s datastore, Longhorn backupTarget, Postgres — none), so this floor is
+     * load-bearing rather than cautious.
+     *
+     * Configurable because the benchmark cannot age an object — Kubernetes owns creationTimestamp,
+     * so a case that exercises the delete path has to lower the floor instead. Anything below the
+     * default is announced at startup: the benchmark and production share one MCP server, so a
+     * guard relaxed for a test run is relaxed for the live cluster until someone puts it back.
+     */
+    minOrphanAgeDays: parseInt(process.env.MIN_ORPHAN_AGE_DAYS ?? "14"),
   },
   // cap on items returned by namespaced list tools, so a huge namespace can't produce
   // a response that gets truncated to garbage downstream
