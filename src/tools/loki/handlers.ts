@@ -1,9 +1,31 @@
 import { z } from "zod";
 import { getClient } from "./client.js";
-import { parseStreams } from "../../utils/loki/index.js";
+import { explainEmptyLogs, parseStreams, type EmptyLogs, type LogEntry } from "../../utils/loki/index.js";
 import { withUpstream } from "../../utils/errors/index.js";
 
 const TimeRange = z.object({ start: z.string().optional(), end: z.string().optional() });
+
+/**
+ * An empty answer gets one follow-up question to Loki — "which namespaces do you hold ANY line
+ * from, in this same window?" — so the caller learns whether the query or the pipeline came back
+ * empty. See explainEmptyLogs for why that difference is the whole point.
+ *
+ * Only on empty: a non-empty answer is returned byte-for-byte as before, so nothing that already
+ * works pays for this. And the probe is a courtesy, never a new way to fail — if it errors, the
+ * caller gets the plain `[]` it always got, rather than an answered query turning into a failed one.
+ */
+async function explained(query: string, entries: LogEntry[], window: { start?: string; end?: string }): Promise<LogEntry[] | EmptyLogs> {
+  if (entries.length > 0) return entries;
+  try {
+    const params: Record<string, string> = {};
+    if (window.start) params.start = window.start;
+    if (window.end) params.end = window.end;
+    const res = await getClient().get("/loki/api/v1/label/namespace/values", { params });
+    return explainEmptyLogs(query, Array.isArray(res.data?.data) ? res.data.data : []);
+  } catch {
+    return entries;
+  }
+}
 
 export const queryLogs = (input: unknown) => {
   const { query, limit, time, direction } = z.object({
@@ -16,7 +38,8 @@ export const queryLogs = (input: unknown) => {
     const params: Record<string, unknown> = { query, limit, direction };
     if (time) params.time = time;
     const res = await getClient().get("/loki/api/v1/query", { params });
-    return parseStreams(res.data.data.result);
+    // No start: an instant query has no window of its own, so the probe uses Loki's default one.
+    return explained(query, parseStreams(res.data.data.result), { end: time });
   });
 };
 
@@ -30,7 +53,7 @@ export const queryLogsRange = (input: unknown) => {
   }).parse(input);
   return withUpstream("loki", "Loki range query failed", async () => {
     const res = await getClient().get("/loki/api/v1/query_range", { params: { query, start, end, limit, direction } });
-    return parseStreams(res.data.data.result);
+    return explained(query, parseStreams(res.data.data.result), { start, end });
   });
 };
 

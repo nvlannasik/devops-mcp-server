@@ -1,6 +1,24 @@
 import { z } from "zod";
 import { getClient } from "./client.js";
 import { withUpstream } from "../../utils/errors/index.js";
+import { explainEmptyVector } from "../../utils/prometheus/index.js";
+
+/**
+ * An empty vector gets the metric names it references checked against what Prometheus actually
+ * holds, so "this name does not exist" stops looking identical to "nothing crossed the threshold".
+ * See explainEmptyVector. Same two rules as the Loki probe: only on empty (a populated result is
+ * returned exactly as before), and a failed probe returns the plain result, never an error.
+ */
+async function explainedVector(query: string, data: { result?: unknown }) {
+  if (!Array.isArray(data?.result) || data.result.length > 0) return data;
+  try {
+    const res = await getClient().get("/api/v1/label/__name__/values");
+    const note = explainEmptyVector(query, new Set<string>(Array.isArray(res.data?.data) ? res.data.data : []));
+    return note ? { ...data, ...note } : data;
+  } catch {
+    return data;
+  }
+}
 
 type TargetRecord = { labels: Record<string, string>; health: unknown; lastError: unknown; lastScrape: unknown };
 type RuleRecord = { labels?: Record<string, string>; type: unknown; name: unknown; query: unknown; duration: unknown; state: unknown; health: unknown };
@@ -12,7 +30,7 @@ export const query = (input: unknown) => {
     const params: Record<string, string> = { query };
     if (time) params.time = time;
     const res = await getClient().get("/api/v1/query", { params });
-    return res.data.data;
+    return explainedVector(query, res.data.data);
   });
 };
 
@@ -25,7 +43,7 @@ export const queryRange = (input: unknown) => {
   }).parse(input);
   return withUpstream("prometheus", "Prometheus range query failed", async () => {
     const res = await getClient().get("/api/v1/query_range", { params: { query, start, end, step } });
-    return res.data.data;
+    return explainedVector(query, res.data.data);
   });
 };
 
