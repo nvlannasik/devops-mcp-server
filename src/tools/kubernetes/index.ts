@@ -80,7 +80,13 @@ const tools: Tool[] = [
       properties: {
         pod_name: { type: "string", description: "Pod name" },
         namespace: { type: "string", description: "Namespace (default: default)" },
-        container: { type: "string", description: "Container name (optional)" },
+        container: {
+          type: "string",
+          description:
+            "Container name. Optional: on a pod with several containers (a sidecar, a proxy, a log shipper) omit it and " +
+            "the tool reads the one that is failing — restarted, or not ready — and names it and the others in the " +
+            "result, so you can ask for a different one by name.",
+        },
         tail_lines: { type: "number", description: "Number of lines from end (default: 100)" },
         previous: { type: "boolean", description: "Logs from the previous (crashed) container instance (default: false)" },
         since_seconds: { type: "number", description: "Only logs from the last N seconds (optional)" },
@@ -181,7 +187,10 @@ const tools: Tool[] = [
   },
   {
     name: "k8s_list_replicasets",
-    description: "List ReplicaSets in a namespace with owner Deployment + revision + desired/ready — rollout history (which RS is active vs stale, failed old RS)",
+    description:
+      "List ReplicaSets in a namespace with owner Deployment + revision + desired/ready + each container's image — rollout " +
+      "history (which RS is active vs stale, failed old RS). The image a rollback should go back to is the `images` entry of " +
+      "the newest older revision that still has ready pods: read it here rather than guessing a tag.",
     inputSchema: { type: "object", properties: { namespace: { type: "string", description: "Namespace (default: default)" } } },
     handler: h.listReplicaSets,
   },

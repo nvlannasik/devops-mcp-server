@@ -67,6 +67,13 @@ export const getRolloutStatus = (input: unknown) => {
 
 // ReplicaSets in a namespace — rollout history: the active RS (desired>0) vs stale ones,
 // grouped by owning Deployment + revision. Old RS with unready pods = a failed rollout left behind.
+//
+// `images` is what makes this history usable for a rollback, and it was missing. The
+// imagepullbackoff playbook told the model this tool "shows the previous ReplicaSet with the image
+// it was built from", and the image guard's refusal told it to "find the last good one in the
+// workload's rollout history" — but no row carried an image, so the only image a model could name
+// was one it invented. Measured 2026-09-25, bench A03: `nginx:latest`, refused as invented, no card.
+// The template's containers are already in this list response: zero extra API calls.
 export const listReplicaSets = (input: unknown) => {
   const { namespace } = NS.parse(input);
   return withUpstream("kubernetes", "Failed to list ReplicaSets", async () => {
@@ -79,6 +86,7 @@ export const listReplicaSets = (input: unknown) => {
       desired: rs.spec!.replicas ?? 0,
       ready: rs.status!.readyReplicas ?? 0,
       age: rs.metadata!.creationTimestamp,
+      images: Object.fromEntries((rs.spec!.template?.spec?.containers ?? []).map((c) => [c.name, c.image])),
     }));
   });
 };
