@@ -334,6 +334,26 @@ const tools: Tool[] = [
     handler: h.getCustomResources,
   },
   {
+    name: "k8s_find_by_name",
+    description:
+      "Find every object with this EXACT name across the kinds people name things by — Deployment, StatefulSet, " +
+      "DaemonSet, CronJob, Job, Pod, Service, Ingress, ConfigMap, Secret (name only), ServiceAccount, " +
+      "PersistentVolumeClaim — in one namespace or in all. Use it when you do not know what KIND a named object is, " +
+      "and before concluding that something does not exist: a lookup by a guessed kind comes back empty and reads " +
+      "exactly like absence. It says what a name IS, not whether it is unused — for a cleanup, k8s_find_unused_resources " +
+      "is still required. A name that is a namespace is reported as one. Each match carries its namespace and " +
+      "managedBy (flux / helm / none). Exact names only — it never suggests similar ones.",
+    inputSchema: {
+      type: "object",
+      required: ["name"],
+      properties: {
+        name: { type: "string", description: "The exact object name" },
+        namespace: { type: "string", description: "Namespace to search — omit to search every namespace" },
+      },
+    },
+    handler: h.findByName,
+  },
+  {
     name: "k8s_get_resource",
     description:
       "Get ANY Kubernetes resource by apiVersion + kind — the full object (spec + status) when `name` is given, " +
