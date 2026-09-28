@@ -146,6 +146,22 @@ const IDLE_CPU_CORES = 0.002;
 export const IDLE_MIN_WINDOW_HOURS = 24;
 
 /** `24h` / `90m` / `7d` -> hours. Input is already WINDOW_RE-validated, so the parse cannot fail. */
+/**
+ * The three usage queries, per container. `max by`, never `sum by`, for usage: one container's
+ * usage is one number however many series carry it, and a cluster that scrapes cAdvisor twice
+ * (measured 2026-09-28: the chart's kubernetes-nodes-cadvisor beside a custom kubernetes-cadvisor)
+ * doubles every summed CPU figure. The throttle ratio keeps `sum` — its two halves double together.
+ */
+export function usageQueries(s: string, window: string): { cpu: string; mem: string; throttle: string } {
+  return {
+    cpu: `quantile_over_time(0.95, max by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{${s}}[5m]))[${window}:5m])`,
+    mem: `max by (namespace, pod, container) (max_over_time(container_memory_working_set_bytes{${s}}[${window}]))`,
+    throttle:
+      `sum by (namespace, pod, container) (rate(container_cpu_cfs_throttled_periods_total{${s}}[${window}])) ` +
+      `/ sum by (namespace, pod, container) (rate(container_cpu_cfs_periods_total{${s}}[${window}]) > 0)`,
+  };
+}
+
 export function windowHours(window: string): number {
   const n = Number(window.slice(0, -1));
   const unit = window.slice(-1);
@@ -453,14 +469,8 @@ export const recommendResources = (input: unknown) => {
     // A p95 over a subquery is the expensive query in this server. It is one instant query for
     // the whole scope rather than one per workload, which is what keeps it affordable; a
     // multi-day `window` on a large cluster will still be slow.
-    const [cpu, mem, throttle] = await Promise.all([
-      vector(`quantile_over_time(0.95, sum by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{${s}}[5m]))[${window}:5m])`),
-      vector(`max by (namespace, pod, container) (max_over_time(container_memory_working_set_bytes{${s}}[${window}]))`),
-      vector(
-        `sum by (namespace, pod, container) (rate(container_cpu_cfs_throttled_periods_total{${s}}[${window}])) ` +
-          `/ sum by (namespace, pod, container) (rate(container_cpu_cfs_periods_total{${s}}[${window}]) > 0)`
-      ),
-    ]);
+    const q = usageQueries(s, window);
+    const [cpu, mem, throttle] = await Promise.all([vector(q.cpu), vector(q.mem), vector(q.throttle)]);
 
     const hours = windowHours(window);
     const built = buildRecommendations(containers, aggregateUsage(containers, { cpu, mem, throttle }), hours);

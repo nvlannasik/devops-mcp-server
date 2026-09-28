@@ -7,6 +7,7 @@ import {
   buildRecommendations,
   idleWorkloadsOf,
   windowHours,
+  usageQueries,
   IDLE_MIN_WINDOW_HOURS,
   type WorkloadContainer,
 } from "./rightsizing.js";
@@ -189,4 +190,18 @@ test("a workload is idle only when EVERY container is measured and idle", () => 
 test("a workload with no metrics at all is never idle", () => {
   const c = container();
   assert.deepEqual(idleWorkloadsOf(buildRecommendations([c], new Map(), 24).recommendations), []);
+});
+
+// Measured 2026-09-28 on the dev cluster: cAdvisor was scraped by TWO jobs (the chart's
+// kubernetes-nodes-cadvisor and a custom kubernetes-cadvisor), so every container had two usage
+// series and `sum by (namespace, pod, container)` reported loadgen at 0.0166 cores against a real
+// 0.0083 — every CPU recommendation doubled. One container's usage is one number however many
+// series carry it, so the join takes the max, the way memory already did. The throttle ratio may
+// keep `sum`: numerator and denominator double together.
+test("container usage is not summed across the series that carry it", () => {
+  const q = usageQueries('container!=""', "24h");
+  for (const usage of [q.cpu, q.mem]) {
+    assert.doesNotMatch(usage, /sum by \(namespace, pod, container\) \((rate|max_over_time)\(container_(cpu_usage|memory_working)/, usage);
+    assert.match(usage, /max by \(namespace, pod, container\)/, usage);
+  }
 });
