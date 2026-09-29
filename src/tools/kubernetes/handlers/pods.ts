@@ -6,15 +6,54 @@ import config from "../../../config/index.js";
 
 const LIST_TIMEOUT_SEC = Math.ceil(config.upstreamTimeoutMs / 1000);
 
+/**
+ * Why a label selector matched no pod, for the one case worth an extra read: the value exists in
+ * the namespace under a DIFFERENT key. Live 2026-09-29: `app=checkout-gateway` came back `[]`
+ * twice in one investigation — the chart labels `app.kubernetes.io/name` — and the model read an
+ * empty list as "no pods", which then leaked into a remediation refusal. Same rule as the Loki and
+ * Prometheus empties: only on empty, and a failed probe returns the plain result.
+ */
+export function selectorMissNote(namespace: string, selector: string, labelSets: ReadonlyArray<Record<string, string>>): string {
+  if (labelSets.length === 0) return `no pod at all in namespace \`${namespace}\` — the selector is not the problem.`;
+  const terms = selector.split(",").map((t) => t.split(/!?==?/)).filter((kv) => kv.length === 2);
+  const hits = new Map<string, number>();
+  for (const [key, value] of terms) {
+    for (const labels of labelSets) {
+      for (const [k, v] of Object.entries(labels)) {
+        if (v === value.trim() && k !== key.trim()) hits.set(`${k}=${v}`, (hits.get(`${k}=${v}`) ?? 0) + 1);
+      }
+    }
+  }
+  if (hits.size > 0) {
+    const found = [...hits].map(([kv, n]) => `\`${kv}\` (${n} pod(s))`).join(", ");
+    return `no pod in \`${namespace}\` matches \`${selector}\`, but pods there carry ${found} — use that as label_selector.`;
+  }
+  const keys = [...new Set(labelSets.flatMap((l) => Object.keys(l)))].sort().slice(0, 8);
+  return (
+    `no pod in \`${namespace}\` matches \`${selector}\`, and no pod there carries that value under another ` +
+    `key. ${labelSets.length} pod(s) in the namespace; label keys in use: ${keys.join(", ")}.`
+  );
+}
+
 export const listPods = (input: unknown) => {
   const { namespace, label_selector } = NSLabel.parse(input);
   return withUpstream("kubernetes", "Failed to list pods", async () => {
-    const res = await getApi(k8s.CoreV1Api).listNamespacedPod({
+    const api = getApi(k8s.CoreV1Api);
+    const res = await api.listNamespacedPod({
       namespace,
       labelSelector: label_selector,
       limit: config.k8sListLimit,
       timeoutSeconds: LIST_TIMEOUT_SEC,
     });
+    if (res.items.length === 0 && label_selector) {
+      try {
+        const all = await api.listNamespacedPod({ namespace, limit: config.k8sListLimit, timeoutSeconds: LIST_TIMEOUT_SEC });
+        const labelSets = all.items.map((p) => p.metadata?.labels ?? {});
+        return { pods: [], noPodsMatched: true, note: selectorMissNote(namespace, label_selector, labelSets) };
+      } catch {
+        return [];
+      }
+    }
     return res.items.map((pod) => ({
       name: pod.metadata!.name,
       namespace: pod.metadata!.namespace,

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { getClient } from "./client.js";
 import { withUpstream } from "../../utils/errors/index.js";
-import { explainEmptyVector } from "../../utils/prometheus/index.js";
+import { explainEmptyVector, futureTimeNote } from "../../utils/prometheus/index.js";
 
 /**
  * An empty vector gets the metric names it references checked against what Prometheus actually
@@ -26,11 +26,15 @@ type GroupRecord = { name: unknown; file: unknown; rules: RuleRecord[] };
 
 export const query = (input: unknown) => {
   const { query, time } = z.object({ query: z.string().min(1), time: z.string().optional() }).parse(input);
+  // Evaluated at now rather than refused: a future `time` is always a miscomputed "now", and a
+  // refusal costs the caller a whole round to learn that. See futureTimeNote.
+  const future = time ? futureTimeNote(time, Date.now()) : null;
   return withUpstream("prometheus", "Prometheus query failed", async () => {
     const params: Record<string, string> = { query };
-    if (time) params.time = time;
+    if (time && !future) params.time = time;
     const res = await getClient().get("/api/v1/query", { params });
-    return explainedVector(query, res.data.data);
+    const data = await explainedVector(query, res.data.data);
+    return future ? { ...data, timeIgnored: future } : data;
   });
 };
 

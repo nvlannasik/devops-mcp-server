@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { explainEmptyVector, metricsInQuery } from "./index.js";
+import { explainEmptyVector, futureTimeNote, metricsInQuery } from "./index.js";
 
 const known = new Set([
   "http_server_requests_total",
@@ -56,4 +56,16 @@ test("a bare range selector is a metric too", () => {
   assert.equal(r.emptyResult, "no_series_match");
   assert.match(r.note, /can itself be the answer/);
   assert.equal(explainEmptyVector("rate(http_requests_total[5m])", known)?.emptyResult, "unknown_metric");
+});
+
+// Live 2026-09-29: `time: "1790694203"` was sent at 14:05:31 UTC — 58 minutes ahead — and the
+// 5xx query came back empty while checkout-gateway was failing.
+test("a time in the future is caught in both documented formats; now and the past are not", () => {
+  const now = 1790690731_000;
+  assert.match(futureTimeNote("1790694203", now) ?? "", /58 min in the future.*evaluated at now/);
+  assert.match(futureTimeNote("2026-09-29T15:03:23Z", now) ?? "", /min in the future/);
+  assert.equal(futureTimeNote("1790690731", now), null, "now");
+  assert.equal(futureTimeNote("1790690761.5", now), null, "inside the drift allowance");
+  assert.equal(futureTimeNote("1790687131", now), null, "an hour ago is a legitimate question");
+  assert.equal(futureTimeNote("not a time", now), null, "unparseable is Prometheus' to reject");
 });

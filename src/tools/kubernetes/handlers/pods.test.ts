@@ -1,6 +1,30 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pickContainer } from "./pods.js";
+import { pickContainer, selectorMissNote } from "./pods.js";
+
+// Live 2026-09-29: `app=checkout-gateway` returned `[]` twice in one investigation; the chart
+// labels `app.kubernetes.io/name`. Label sets below are the sample-apps pods' own, trimmed.
+const sampleApps = ["checkout-gateway", "orders-api", "storefront"].map((name) => ({
+  "app.kubernetes.io/name": name,
+  "app.kubernetes.io/managed-by": "Helm",
+  "pod-template-hash": "774f8b79dd",
+}));
+
+test("an empty selector result names the key the value really lives under", () => {
+  const note = selectorMissNote("sample-apps", "app=checkout-gateway", sampleApps);
+  assert.match(note, /`app\.kubernetes\.io\/name=checkout-gateway` \(1 pod\(s\)\) — use that as label_selector/);
+});
+
+test("a value found nowhere lists the keys in use, and an empty namespace says so", () => {
+  const note = selectorMissNote("sample-apps", "app=payments", sampleApps);
+  assert.match(note, /no pod there carries that value/);
+  assert.match(note, /3 pod\(s\) in the namespace; label keys in use: app\.kubernetes\.io\/managed-by, app\.kubernetes\.io\/name, pod-template-hash/);
+  assert.match(selectorMissNote("empty-ns", "app=x", []), /no pod at all/);
+});
+
+test("a set-based or existence selector does not crash the note", () => {
+  assert.match(selectorMissNote("sample-apps", "app in (a,b),tier", sampleApps), /label keys in use/);
+});
 
 const pod = (
   containers: Array<[name: string, ready: boolean, restarts: number]>,

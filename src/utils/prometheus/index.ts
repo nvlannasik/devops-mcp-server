@@ -51,6 +51,26 @@ function nearMisses(unknown: string, known: ReadonlySet<string>): string[] {
   return out;
 }
 
+/** Clock drift allowed between the caller and Prometheus before a `time` counts as the future. */
+export const FUTURE_SKEW_SECONDS = 60;
+
+/**
+ * An instant-query `time` in the future, or null. Prometheus evaluates it as asked, finds no
+ * samples there, and the empty vector reads exactly like "nothing is failing". Live 2026-09-29:
+ * the agent sent `time: "1790694203"`, 58 minutes ahead, while checkout-gateway was serving 5xx.
+ * Accepts both formats the tool documents: Unix seconds and RFC3339.
+ */
+export function futureTimeNote(time: string, nowMs: number): string | null {
+  const t = time.trim();
+  const at = /^\d+(\.\d+)?$/.test(t) ? Number(t) : Date.parse(t) / 1000;
+  const ahead = at - nowMs / 1000;
+  if (!Number.isFinite(ahead) || ahead <= FUTURE_SKEW_SECONDS) return null;
+  return (
+    `\`time\` ${time} is ${Math.round(ahead / 60)} min in the future, where Prometheus has no samples — ` +
+    `this was evaluated at now instead. Omit \`time\` to query now.`
+  );
+}
+
 export interface EmptyVectorNote {
   emptyResult: "unknown_metric" | "no_series_match";
   unknownMetrics?: string[];
