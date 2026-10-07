@@ -1,6 +1,7 @@
 # DevOps MCP Server
 
-MCP Server for DevOps Observability — integrates with Kubernetes, Prometheus, Alertmanager, and Loki.
+MCP Server for DevOps Observability — integrates with Kubernetes, Prometheus, Alertmanager, Loki and Tempo/Jaeger. Consumed by
+[devops-ai-agent](../devops-ai-agent) over MCP (stdio or HTTP); any MCP client works.
 
 ## Requirements
 
@@ -18,7 +19,7 @@ npm test                       # unit tests
 
 ## Testing
 
-`npm test` runs `node --import tsx --test 'src/**/*.test.ts'` — Node's built-in test runner (Node >= 24), no extra dependencies. Test files (`*.test.ts`) are excluded from the production build. Current coverage: the `withTimeout` upstream-timeout helper.
+`npm test` runs `node --import tsx --test 'src/**/*.test.ts'` — Node's built-in test runner (Node >= 24), no extra dependencies. Test files (`*.test.ts`) are excluded from the production build. Covered: tool schemas, every write-tool guardrail (namespace allowlist, GitOps verdict, scale bounds, orphan refusals), the cluster health/inventory scans, pod correlation, find-by-name, rightsizing and the unused scan, the explained-empty Loki/Prometheus answers, the Alertmanager grouping and the tracing adapters, `/mcp` auth and the upstream timeout.
 
 ## Configuration
 
@@ -27,9 +28,10 @@ npm test                       # unit tests
 | `TRANSPORT` | `stdio` or `http` | `stdio` |
 | `PORT` | HTTP port | `3000` |
 | `MCP_AUTH_TOKEN` | Bearer token required on `/mcp` (http transport). Unset = open + a startup warning. `/health` stays unauthenticated for probes | — |
-| `MCP_ENABLE_WRITE_TOOLS` | `true` registers the `[WRITE]` tools (`k8s_rollout_restart`, `k8s_set_image`, `k8s_set_resources`, `k8s_scale`, `k8s_delete_pod`). Off = not even listed. `container` is optional on set_image/set_resources (auto-resolved for single-container workloads) | `false` |
+| `MCP_ENABLE_WRITE_TOOLS` | `true` registers the seven `[WRITE]` tools (see [Write tools](#write-tools-7)). Off = not even listed | `false` |
 | `ALLOWED_REMEDIATION_NAMESPACES` | Comma-separated namespaces write tools may target. **Empty = all blocked.** `kube-system`/`kube-public`/`kube-node-lease`/`flux-system` are always blocked. Spec-mutating actions also refuse Flux/Helm-managed workloads (GitOps guard — the source of truth would revert them); `rollout_restart` stays allowed | — |
-| `MAX_SCALE_DELTA` | Max replica change per `k8s_scale` action (scale-to-zero is always refused) | `5` |
+| `MAX_SCALE_DELTA` | Max replica change per `k8s_scale` action (scale-to-zero only with `quarantine: true`) | `5` |
+| `MIN_ORPHAN_AGE_DAYS` | Minimum age before `k8s_delete_orphan` accepts an object. A value under 14 is warned about on every boot | `14` |
 | `K8S_AUTH_MODE` | `kubeconfig` or `incluster` | `kubeconfig` |
 | `K8S_KUBECONFIG_PATH` | Path to kubeconfig | `~/.kube/config` |
 | `PROMETHEUS_URL` | Prometheus base URL | `http://localhost:9090` |
@@ -49,14 +51,16 @@ npm test                       # unit tests
 | `K8S_LIST_LIMIT` | Cap on items returned by namespaced list tools (pods/events/configmaps/secrets). Deliberately **not** applied to `k8s_cluster_health`, which pages through everything | `100` |
 | `LOG_LEVEL` | `error\|warn\|info\|http\|debug` | `debug` (dev), `info` (prod) |
 
-## Tools (49)
+## Tools (54 read-only + 7 write)
 
-### Kubernetes (33)
+### Kubernetes (36)
 
 | Tool | Description |
 |------|-------------|
 | `k8s_cluster_health` | **Whole-cluster pod health in ONE call** — scans every namespace, returns only what is wrong (CrashLoopBackOff/ImagePullBackOff/OOMKilled/Pending/not-ready) + per-phase counts + `scanned` (pods, namespaces, `complete`). Every other list tool sees one namespace, so "is anything broken?" otherwise costs one call per namespace and gets answered from a partial sample. Pass `namespace` only to narrow |
 | `k8s_cluster_inventory` | **Whole-cluster inventory in ONE call** — per namespace the workloads (ready/desired, images), who manages each (`managedBy`: HelmRelease+chart / Kustomization+path / Helm / unmanaged, read with the GitOps guard's own label reader), Services+ports, Ingress hosts, CronJob schedules. No env, ConfigMap or Secret content. `scanned.complete` like `k8s_cluster_health`. Without `namespace` it returns an **overview** (one line per workload + owner, Ingress hosts) because the agent caps a tool result at 8000 chars; pass `namespace` for detail, or `detail: true` for everything (the dashboard's `/cluster`). Detail entries carry `services[].serves` (workloads the selector matches) and `ingresses[].backends` (host → Service) for the dashboard's map |
+| `k8s_correlate_pods` | Do several broken pods share ONE cause? Diffs the failing pods against the healthy ones in the namespace and returns what only the broken set shares (`uniqueToBroken`: node, image, ConfigMap/Secret/PVC refs, ServiceAccount, env var **names**). A lead, never a conclusion |
+| `k8s_find_by_name` | Every object with this EXACT name across twelve kinds, in one namespace or all — for a request that names an object without its kind. Kinds RBAC hides are reported under `unreadable`, never as absent |
 | `k8s_list_namespaces` | List all namespaces |
 | `k8s_list_nodes` | List nodes with status, roles, and resource capacity |
 | `k8s_describe_pod` | ONE pod's detailed status — container state/lastState (OOMKilled + exit code, CrashLoopBackOff, ImagePullBackOff), conditions, QoS, configured requests/limits, node, **+ the pod's recent events** (like `kubectl describe`). RCA workhorse (no live usage — that's Prometheus) |
@@ -143,6 +147,22 @@ Cost/sizing questions, in `src/tools/capacity/`. `k8s_recommend_resources` is th
 | `k8s_find_unused_resources` | Orphaned/idle objects cluster-wide in one call (the `kor` question): unmounted PVCs, endpoint-less Services, workloads scaled to 0, unreferenced ConfigMaps/Secrets/ServiceAccounts. Three filters guard the claim: references from running pods **and** every workload pod template; `ownerReferences` (operator-*created*); and a match against every custom resource in the cluster (operator-*referenced*, `cross_check_crds`, default on, needs `rbac.readAllCustomResources`). `crossCheck.crdsUnreadable` non-empty ⇒ the cross-check was partial and the note says so. Still a **review** list, never a delete list |
 | `k8s_recommend_resources` | Right-sizing: configured requests/limits vs real usage (CPU p95, peak working set, CFS throttle ratio over `window`, default 24h). Returns the concrete number to change per container plus cluster-wide over-reserved CPU/memory. Flags `oom_risk`, `cpu_throttled`, `*_under_provisioned`, `no_requests`, `over_provisioned`, `no_data` |
 
+### Write tools (7)
+
+Registered only with `MCP_ENABLE_WRITE_TOOLS=true`, every one supports `dry_run`, and only in
+`ALLOWED_REMEDIATION_NAMESPACES`. In `devops-ai-agent` nothing calls them without a human clicking
+*Approve* on a dry-run-validated card.
+
+| Tool | Description |
+|------|-------------|
+| `k8s_rollout_restart` | Restart a Deployment/StatefulSet/DaemonSet (reconcile-safe, allowed on GitOps-managed workloads) |
+| `k8s_set_image` | Change one container's image. `container` optional on a single-container workload. Refused on Flux/Helm-managed workloads |
+| `k8s_set_resources` | Patch requests/limits — only the values given. Refused on Flux/Helm-managed workloads |
+| `k8s_scale` | Change replicas within `MAX_SCALE_DELTA`; zero only with `quarantine: true` (reversible "looks unused"). Refused on Flux/Helm-managed workloads |
+| `k8s_delete_pod` | Delete ONE controller-owned pod (its controller recreates it) |
+| `k8s_delete_orphan` | Delete ONE object nothing declares (ConfigMap, Service, ServiceAccount, or a workload already at 0). Returns `backupManifest`, captured immediately before the delete. Never Secrets or PVCs |
+| `flux_reconcile` | Force Flux to re-apply the declared state of a workload's HelmRelease — the fix for drift. Needs `patch` on `helmreleases` |
+
 ## Project Structure
 
 ```
@@ -152,13 +172,21 @@ src/
 ├── tools/
 │   ├── kubernetes/
 │   │   ├── client.ts, schemas.ts, index.ts
-│   │   └── handlers/         # Per-domain: namespaces, nodes, pods, workloads...
+│   │   ├── write.ts          # [WRITE] tools (MCP_ENABLE_WRITE_TOOLS)
+│   │   ├── guardrails.ts     # Namespace allowlist, GitOps verdict, scale bounds
+│   │   ├── podspec.ts, provenance.ts  # Shared reference walker / managedBy reader
+│   │   └── handlers/         # Per-domain: health, inventory, correlate, find, pods, workloads...
 │   ├── prometheus/
-│   └── loki/
+│   ├── alertmanager/
+│   ├── loki/
+│   ├── tracing/              # Tempo + Jaeger adapters
+│   └── capacity/             # Unused scan + rightsizing
 └── utils/
     ├── errors/index.ts       # withUpstream() helper
     ├── http/index.ts         # createHttpClient()
-    ├── loki/index.ts         # parseStreams()
+    ├── loki/index.ts         # parseStreams(), explained-empty answer (noLogLines contract)
+    ├── prometheus/index.ts   # explained-empty answer (unknown_metric / didYouMean)
+    ├── timeout/index.ts      # withTimeout() — UPSTREAM_TIMEOUT_SECONDS
     └── logger/log.ts         # Winston + logWithContext()
 ```
 
@@ -207,4 +235,6 @@ PROMETHEUS_URL=http://prometheus.monitoring.svc.cluster.local:9090
 LOKI_URL=http://loki.monitoring.svc.cluster.local:3100
 ```
 
-Requires a ServiceAccount with ClusterRole (`get`/`list` on all resources).
+Requires a ServiceAccount with ClusterRole (`get`/`list` on all resources), plus the write verbs
+if write tools are enabled. In this workspace it is deployed as part of the umbrella chart
+`devops-ai-helm-charts/charts/devops-ai-stack`, which renders that RBAC.

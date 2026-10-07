@@ -1,8 +1,9 @@
 # devops-mcp-server
 
 MCP (Model Context Protocol) server exposing DevOps tools (Kubernetes, Prometheus,
-Alertmanager, Loki, Tracing) consumed by `devops-ai-agent`. Part of a 3-repo system: `devops-ai-agent`,
-`devops-mcp-server` (this), `llm-worker`.
+Alertmanager, Loki, Tracing) consumed by `devops-ai-agent`. Part of a multi-repo system: `devops-ai-agent`,
+`devops-mcp-server` (this), `llm-worker` (dir `devops-ai-agent-worker`), deployed by the
+`devops-ai-helm-charts` umbrella chart.
 
 **Read `MEMORY_BANK.md` before adding tools or touching transport/auth** — it holds the
 architecture and design decisions.
