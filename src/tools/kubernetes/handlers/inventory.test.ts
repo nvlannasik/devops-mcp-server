@@ -40,8 +40,8 @@ test("counts, images, ports, hosts and schedules — and nothing from env", () =
   const ns = out.namespaces.find((n) => n.name === "sample-apps")!;
   const sf = ns.workloads.find((w) => w.name === "storefront")!;
   assert.deepEqual([sf.kind, sf.ready, sf.desired, sf.images], ["Deployment", 1, 2, ["ghcr.io/x/storefront:1.4.2"]]);
-  assert.deepEqual(ns.services, [{ name: "storefront", type: "ClusterIP", ports: ["80/TCP→3000"] }]);
-  assert.deepEqual(ns.ingresses, [{ name: "storefront", hosts: ["shop.example.com"] }]);
+  assert.deepEqual(ns.services, [{ name: "storefront", type: "ClusterIP", ports: ["80/TCP→3000"], serves: [] }]);
+  assert.deepEqual(ns.ingresses, [{ name: "storefront", hosts: ["shop.example.com"], backends: [] }]);
   assert.equal(ns.workloads.find((w) => w.name === "nightly")!.schedule, "0 2 * * *");
   assert.doesNotMatch(JSON.stringify(out), /s3cret|SECRET/);
 });
@@ -76,4 +76,41 @@ test("the overview is one line per workload — owner included, images and ports
   assert.doesNotMatch(JSON.stringify(ov), /ghcr\.io|80\/TCP/);
   assert.deepEqual(ov.scanned, { namespaces: 3, complete: true });
   assert.match(ov.detail, /namespace/);
+});
+
+const svc = (ns: string, name: string, selector?: Record<string, string>) => ({ metadata: { namespace: ns, name }, spec: { type: "ClusterIP", ports: [{ port: 80 }], ...(selector ? { selector } : {}) } });
+const dep = (ns: string, name: string, labels: Record<string, string>) => ({ metadata: { namespace: ns, name }, spec: { replicas: 1, template: { metadata: { labels }, spec: { containers: [{ image: "x:1" }] } } }, status: { readyReplicas: 1 } });
+const rel = {
+  namespaces: ["a", "b"],
+  deployments: [dep("a", "web", { app: "web", tier: "fe" }), dep("a", "api", { app: "api" }), dep("b", "web", { app: "web", tier: "fe" })],
+  statefulsets: [], daemonsets: [],
+  cronjobs: [{ metadata: { namespace: "a", name: "job", labels: {} }, spec: { schedule: "* * * * *", jobTemplate: { spec: { template: { metadata: { labels: { app: "web" } }, spec: { containers: [{ image: "j:1" }] } } } } } }],
+  services: [svc("a", "web", { app: "web" }), svc("a", "strict", { app: "web", tier: "be" }), svc("a", "external")],
+  ingresses: [{ metadata: { namespace: "a", name: "in" }, spec: {
+    defaultBackend: { service: { name: "web" } },
+    rules: [{ host: "shop.example.com", http: { paths: [{ backend: { service: { name: "web" } } }, { backend: { service: { name: "api" } } }, { backend: { service: { name: "web" } } }] } },
+            { http: { paths: [{ backend: { service: { name: "api" } } }] } }] } }],
+  kustomizations: [], complete: true,
+};
+
+test("serves: every selector pair must match, same namespace only, never a CronJob", () => {
+  const a = shapeInventory(rel as any).namespaces.find((n) => n.name === "a")!;
+  const serves = Object.fromEntries(a.services.map((s) => [s.name, s.serves]));
+  assert.deepEqual(serves.web, ["web"], "b/web carries the same labels and must not appear; the CronJob neither");
+  assert.deepEqual(serves.strict, [], "tier=be is not satisfied by tier=fe");
+  assert.deepEqual(serves.external, [], "no selector, no edge");
+});
+
+test("backends: each path with its host, '*' for no host and the default backend, deduplicated", () => {
+  const a = shapeInventory(rel as any).namespaces.find((n) => n.name === "a")!;
+  assert.deepEqual(a.ingresses[0]!.backends, [
+    { host: "*", service: "web" },
+    { host: "shop.example.com", service: "web" },
+    { host: "shop.example.com", service: "api" },
+    { host: "*", service: "api" },
+  ]);
+});
+
+test("the overview carries no relations — the tour's budget is unchanged", () => {
+  assert.doesNotMatch(JSON.stringify(overviewOf(shapeInventory(rel as any))), /serves|backends/);
 });

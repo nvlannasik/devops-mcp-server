@@ -13,11 +13,14 @@ const SYSTEM = new Set(["kube-system", "kube-public", "kube-node-lease", "flux-s
 
 type Labels = Record<string, string> | undefined;
 interface Obj { metadata?: { name?: string; namespace?: string; labels?: Labels } }
-interface PodSpecHolder { spec?: { containers?: Array<{ image?: string }> } }
+interface PodSpecHolder { metadata?: { labels?: Record<string, string> }; spec?: { containers?: Array<{ image?: string }> } }
 interface WorkloadObj extends Obj { spec?: { replicas?: number; template?: PodSpecHolder }; status?: { readyReplicas?: number; numberReady?: number; desiredNumberScheduled?: number } }
 interface CronObj extends Obj { spec?: { schedule?: string; jobTemplate?: { spec?: { template?: PodSpecHolder } } } }
-interface ServiceObj extends Obj { spec?: { type?: string; ports?: Array<{ port?: number; protocol?: string; targetPort?: number | string }> } }
-interface IngressObj extends Obj { spec?: { rules?: Array<{ host?: string }> } }
+interface ServiceObj extends Obj { spec?: { type?: string; selector?: Record<string, string>; ports?: Array<{ port?: number; protocol?: string; targetPort?: number | string }> } }
+type BackendRef = { service?: { name?: string } };
+interface IngressObj extends Obj {
+  spec?: { defaultBackend?: BackendRef; rules?: Array<{ host?: string; http?: { paths?: Array<{ backend?: BackendRef }> } }> };
+}
 interface KustomizationObj { metadata: { name: string; namespace: string }; spec?: { path?: string } }
 
 export type ManagedBy =
@@ -67,8 +70,8 @@ export function shapeInventory(input: InventoryInput) {
     input.namespaces.map((name) => [name, {
       name, system: SYSTEM.has(name),
       workloads: [] as InventoryWorkload[],
-      services: [] as Array<{ name: string; type: string; ports: string[] }>,
-      ingresses: [] as Array<{ name: string; hosts: string[] }>,
+      services: [] as Array<{ name: string; type: string; ports: string[]; serves: string[] }>,
+      ingresses: [] as Array<{ name: string; hosts: string[]; backends: Array<{ host: string; service: string }> }>,
     }])
   );
   const at = (o: Obj) => byNs.get(o.metadata?.namespace ?? "");
@@ -83,13 +86,42 @@ export function shapeInventory(input: InventoryInput) {
       kind: "CronJob", name: c.metadata?.name ?? "", ready: null, desired: null,
       images: images(c.spec?.jobTemplate?.spec?.template), managedBy: owner(c), schedule: c.spec?.schedule,
     });
+  // What a Service's selector can reach: pod-template labels of the namespace's long-running
+  // workloads. A CronJob's pods are not a Service backend, so they are not candidates.
+  const podLabels = new Map<string, Array<{ name: string; labels: Record<string, string> }>>();
+  for (const w of [...input.deployments, ...input.statefulsets, ...input.daemonsets]) {
+    const ns = w.metadata?.namespace ?? "";
+    podLabels.set(ns, [...(podLabels.get(ns) ?? []), { name: w.metadata?.name ?? "", labels: w.spec?.template?.metadata?.labels ?? {} }]);
+  }
+  const serves = (s: ServiceObj): string[] => {
+    const sel = s.spec?.selector;
+    // No selector (ExternalName, hand-managed Endpoints): no edge, rather than a guessed one.
+    if (!sel || Object.keys(sel).length === 0) return [];
+    return (podLabels.get(s.metadata?.namespace ?? "") ?? [])
+      .filter((w) => Object.entries(sel).every(([k, v]) => w.labels[k] === v))
+      .map((w) => w.name);
+  };
+  const backends = (i: IngressObj): Array<{ host: string; service: string }> => {
+    const out: Array<{ host: string; service: string }> = [];
+    const seen = new Set<string>();
+    const add = (host: string, service: string | undefined) => {
+      if (!service || seen.has(`${host}\u0000${service}`)) return;
+      seen.add(`${host}\u0000${service}`);
+      out.push({ host, service });
+    };
+    add("*", i.spec?.defaultBackend?.service?.name);
+    for (const r of i.spec?.rules ?? []) for (const p of r.http?.paths ?? []) add(r.host ?? "*", p.backend?.service?.name);
+    return out;
+  };
   for (const s of input.services)
     at(s)?.services.push({
-      name: s.metadata?.name ?? "", type: s.spec?.type ?? "ClusterIP",
+      name: s.metadata?.name ?? "", type: s.spec?.type ?? "ClusterIP", serves: serves(s),
       ports: (s.spec?.ports ?? []).map((p) => `${p.port}/${p.protocol ?? "TCP"}${p.targetPort !== undefined && p.targetPort !== p.port ? `→${p.targetPort}` : ""}`),
     });
   for (const i of input.ingresses)
-    at(i)?.ingresses.push({ name: i.metadata?.name ?? "", hosts: (i.spec?.rules ?? []).map((r) => r.host).filter((h): h is string => !!h) });
+    at(i)?.ingresses.push({
+      name: i.metadata?.name ?? "", hosts: (i.spec?.rules ?? []).map((r) => r.host).filter((h): h is string => !!h), backends: backends(i),
+    });
   const namespaces = [...byNs.values()].sort((a, b) => Number(a.system) - Number(b.system) || a.name.localeCompare(b.name));
   return { scanned: { namespaces: namespaces.length, complete: input.complete }, namespaces };
 }
