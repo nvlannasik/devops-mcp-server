@@ -26,11 +26,16 @@ const tools: Tool[] = [
       "and CronJobs (ready/desired, images), who manages each (Flux HelmRelease + chart, Flux Kustomization + path, plain " +
       "Helm, or unmanaged), Services with ports and Ingress hosts. USE THIS for onboarding and overview questions — " +
       "'what runs here', 'explain this cluster/namespace', 'how is X deployed'. Omit namespace for the whole cluster; " +
-      "pass it to detail one namespace. Not for health: use k8s_cluster_health for 'is anything broken'. " +
+      "Without namespace the answer is an OVERVIEW — one line per workload with its owner, plus Ingress hosts; " +
+      "pass namespace for that namespace's images, ready/desired, Services and ports. Not for health: use " +
+      "k8s_cluster_health for 'is anything broken'. " +
       "If scanned.complete is false the scan hit its ceiling — say the inventory is partial.",
     inputSchema: {
       type: "object",
-      properties: { namespace: { type: "string", description: "Optional — omit for the whole cluster (no default namespace)" } },
+      properties: {
+        namespace: { type: "string", description: "Optional — omit for the whole-cluster overview (no default namespace)" },
+        detail: { type: "boolean", description: "Full detail for every namespace even without `namespace` (large; default false)" },
+      },
     },
     handler: h.clusterInventory,
   },

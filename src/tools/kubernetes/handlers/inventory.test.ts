@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { shapeInventory } from "./inventory.js";
+import { shapeInventory, overviewOf } from "./inventory.js";
 
 const meta = (ns: string, name: string, labels: Record<string, string> = {}) => ({ metadata: { namespace: ns, name, labels } });
 const base = {
@@ -60,4 +60,20 @@ test("system namespaces sort last, and complete:false survives to the caller", (
   const out = shapeInventory({ ...base, complete: false });
   assert.deepEqual(out.scanned, { namespaces: 3, complete: false });
   assert.equal(out.namespaces.at(-1)!.name, "kube-system");
+});
+
+// Final review, 2026-10-07: the live cluster's full inventory was 16 379 chars and the agent
+// compacts every tool result to 8000 — an overview would have lost namespaces from its middle
+// while reading as complete. The whole-cluster answer is one line per workload; detail is per
+// namespace (or `detail: true`, which the dashboard asks for).
+test("the overview is one line per workload — owner included, images and ports left to the detail call", () => {
+  const ov = overviewOf(shapeInventory(base));
+  const ns = ov.namespaces.find((n) => n.name === "sample-apps")!;
+  assert.ok(ns.workloads.includes("Deployment storefront — helmrelease flux-app/storefront"), JSON.stringify(ns.workloads));
+  assert.ok(ns.workloads.includes("StatefulSet db — kustomization flux-system/apps"));
+  assert.ok(ns.workloads.includes("CronJob nightly — helm"));
+  assert.deepEqual(ns.hosts, ["shop.example.com"]);
+  assert.doesNotMatch(JSON.stringify(ov), /ghcr\.io|80\/TCP/);
+  assert.deepEqual(ov.scanned, { namespaces: 3, complete: true });
+  assert.match(ov.detail, /namespace/);
 });

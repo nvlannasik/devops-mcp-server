@@ -95,10 +95,37 @@ export function shapeInventory(input: InventoryInput) {
 }
 export type Inventory = ReturnType<typeof shapeInventory>;
 
-const InventoryInputSchema = z.object({ namespace: blankToUndefined(z.string().min(1).optional()) });
+const owner = (m: ManagedBy): string =>
+  m.type === "helmrelease" || m.type === "kustomization" ? `${m.type} ${m.namespace}/${m.name}` : m.type;
+
+/**
+ * The whole-cluster answer: one line per workload, owner included, Ingress hosts — no images,
+ * replicas or ports. The agent compacts every tool result to 8000 chars (MAX_TOOL_RESULT_CHARS),
+ * and the full inventory of the live 21-namespace cluster was 16 379: an overview cut there loses
+ * namespaces from its middle and still reads as complete. This shape was 4 247 on the same cluster.
+ * ponytail: ~200 workloads before it reaches the cap too; page by namespace if a cluster gets there.
+ */
+export function overviewOf(inv: Inventory) {
+  return {
+    scanned: inv.scanned,
+    detail: "Overview only. Call again with `namespace` for images, ready/desired, Services and ports, CronJob schedules.",
+    namespaces: inv.namespaces.map((n) => ({
+      name: n.name,
+      system: n.system,
+      workloads: n.workloads.map((w) => `${w.kind} ${w.name} — ${owner(w.managedBy)}`),
+      hosts: n.ingresses.flatMap((i) => i.hosts),
+    })),
+  };
+}
+
+const InventoryInputSchema = z.object({
+  namespace: blankToUndefined(z.string().min(1).optional()),
+  // Full detail for every namespace. Off by default for a whole-cluster call — see overviewOf.
+  detail: z.boolean().optional(),
+});
 
 export const clusterInventory = (raw: unknown) => {
-  const { namespace } = InventoryInputSchema.parse(raw);
+  const { namespace, detail } = InventoryInputSchema.parse(raw);
   return withUpstream("kubernetes", "Failed to read the cluster inventory", async () => {
     const core = getApi(k8s.CoreV1Api), apps = getApi(k8s.AppsV1Api), batch = getApi(k8s.BatchV1Api), net = getApi(k8s.NetworkingV1Api);
     type P<T> = Promise<{ items: T[]; metadata?: { _continue?: string } }>;
@@ -118,12 +145,13 @@ export const clusterInventory = (raw: unknown) => {
       .listCustomObjectForAllNamespaces({ group: "kustomize.toolkit.fluxcd.io", version: "v1", plural: "kustomizations" })
       .then((r) => (r as { items?: KustomizationObj[] }).items ?? [])
       .catch(() => null);
-    return shapeInventory({
+    const inv = shapeInventory({
       namespaces: nsList.items.map((n) => n.metadata?.name).filter((n): n is string => !!n),
       deployments: deps.items, statefulsets: sts.items, daemonsets: dss.items,
       cronjobs: crons.items, services: svcs.items, ingresses: ings.items,
       kustomizations,
       complete: [nsList, deps, sts, dss, crons, svcs, ings].every((l) => l.complete),
     });
+    return (detail ?? !!namespace) ? inv : overviewOf(inv);
   });
 };
