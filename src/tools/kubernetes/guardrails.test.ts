@@ -42,6 +42,7 @@ test("gitOpsVerdict: Kustomize and plain Helm are managed but NOT PR-eligible", 
   const ks = gitOpsVerdict({ "kustomize.toolkit.fluxcd.io/name": "apps", "kustomize.toolkit.fluxcd.io/namespace": "flux-system" }, "deployment `ns/app`");
   assert.ok(ks.managed && !ks.prEligible && ks.source === "flux-kustomization");
   assert.match(ks.managed ? ks.refuseMessage : "", /Flux Kustomization `flux-system\/apps`/);
+  assert.deepEqual(ks.managed && ks.kustomization, { name: "apps", namespace: "flux-system" });
   const helm = gitOpsVerdict({ "app.kubernetes.io/managed-by": "Helm" }, "deployment `ns/app`");
   assert.ok(helm.managed && !helm.prEligible && helm.source === "helm");
   assert.match(helm.managed ? helm.refuseMessage : "", /helm upgrade/);

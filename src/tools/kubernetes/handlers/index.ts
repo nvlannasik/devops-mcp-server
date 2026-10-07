@@ -18,3 +18,4 @@ export * from "./rollout.js";
 export * from "./policy.js";
 export * from "./rbac.js";
 export * from "./find.js";
+export * from "./inventory.js";

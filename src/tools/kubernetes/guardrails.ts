@@ -65,6 +65,7 @@ export type GitOpsVerdict =
       prEligible: boolean; // true only for flux-helmrelease (the v2 PR-flow target)
       source: "flux-helmrelease" | "flux-kustomization" | "helm";
       helmRelease?: { name: string; namespace: string };
+      kustomization?: { name: string; namespace: string };
       refuseMessage: string; // human sentence for the execute/refuse path
     };
 
@@ -88,6 +89,7 @@ export function gitOpsVerdict(labels: Record<string, string> | undefined, target
       managed: true,
       prEligible: false, // raw-manifest PR flow is a later phase (§11)
       source: "flux-kustomization",
+      kustomization: { name: ksName, namespace },
       refuseMessage: `${target} is managed by Flux Kustomization \`${namespace}/${ksName}\` — a direct change would be reverted on the next Flux reconcile. Change it in the GitOps repository instead (rollout_restart is still allowed).`,
     };
   }

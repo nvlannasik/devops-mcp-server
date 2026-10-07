@@ -20,6 +20,21 @@ const tools: Tool[] = [
     handler: h.clusterHealth,
   },
   {
+    name: "k8s_cluster_inventory",
+    description:
+      "WHAT RUNS in the cluster and HOW it is deployed, in one call: per namespace the Deployments, StatefulSets, DaemonSets " +
+      "and CronJobs (ready/desired, images), who manages each (Flux HelmRelease + chart, Flux Kustomization + path, plain " +
+      "Helm, or unmanaged), Services with ports and Ingress hosts. USE THIS for onboarding and overview questions — " +
+      "'what runs here', 'explain this cluster/namespace', 'how is X deployed'. Omit namespace for the whole cluster; " +
+      "pass it to detail one namespace. Not for health: use k8s_cluster_health for 'is anything broken'. " +
+      "If scanned.complete is false the scan hit its ceiling — say the inventory is partial.",
+    inputSchema: {
+      type: "object",
+      properties: { namespace: { type: "string", description: "Optional — omit for the whole cluster (no default namespace)" } },
+    },
+    handler: h.clusterInventory,
+  },
+  {
     name: "k8s_correlate_pods",
     description:
       "Do several broken pods share ONE cause? Diffs the failing pods against the HEALTHY pods in the same " +
