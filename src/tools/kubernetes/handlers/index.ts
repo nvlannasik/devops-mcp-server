@@ -15,6 +15,7 @@ export * from "./serviceaccounts.js";
 export * from "./configs.js";
 export * from "./describe.js";
 export * from "./rollout.js";
+export * from "./changes-handler.js";
 export * from "./policy.js";
 export * from "./rbac.js";
 export * from "./find.js";

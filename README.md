@@ -51,9 +51,9 @@ npm test                       # unit tests
 | `K8S_LIST_LIMIT` | Cap on items returned by namespaced list tools (pods/events/configmaps/secrets). Deliberately **not** applied to `k8s_cluster_health`, which pages through everything | `100` |
 | `LOG_LEVEL` | `error\|warn\|info\|http\|debug` | `debug` (dev), `info` (prod) |
 
-## Tools (54 read-only + 7 write)
+## Tools (55 read-only + 7 write)
 
-### Kubernetes (36)
+### Kubernetes (37)
 
 | Tool | Description |
 |------|-------------|
@@ -68,6 +68,7 @@ npm test                       # unit tests
 | `k8s_get_endpoints` | Ready vs not-ready backend addresses behind a Service (`readyCount=0` → 503 / connection-refused) |
 | `k8s_get_rollout_status` | Rollout progress of ONE Deployment/StatefulSet/DaemonSet — desired vs updated/ready/available + conditions (e.g. ProgressDeadlineExceeded). For "deploy stuck" |
 | `k8s_list_replicasets` | ReplicaSets with owner + revision + desired/ready — rollout history (active vs stale RS) |
+| `k8s_change_timeline` | What CHANGED in a namespace in the last N hours (default 24): Deployment/StatefulSet/DaemonSet rollouts with the pod-template diff against the previous revision (image, env, args, resources, probes — secret env shows its reference only), restart-only rollouts, Flux HelmRelease upgrades (chart vs values), and referenced ConfigMaps updated. `unread` names any source that could not be read — a change there is UNKNOWN, not absent. Use first for "what changed before this broke?" |
 | `k8s_list_pvs` | PersistentVolumes: phase (Bound/Released/Failed), capacity, storageClass, bound claim |
 | `k8s_list_storageclasses` | StorageClasses: provisioner, default flag — PVC Pending often = no default class / broken provisioner |
 | `k8s_list_network_policies` | NetworkPolicies: podSelector, policyTypes, rule counts — "traffic blocked" investigations |

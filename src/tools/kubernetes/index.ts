@@ -215,6 +215,22 @@ const tools: Tool[] = [
     handler: h.listReplicaSets,
   },
   {
+    name: "k8s_change_timeline",
+    description:
+      "What CHANGED in a namespace in the last N hours (default 24): Deployment/StatefulSet/DaemonSet rollouts with the pod-template " +
+      "diff against the previous revision (image, env, args, resources, probes — secret env shows its reference only), restart-only " +
+      "rollouts, Flux HelmRelease upgrades (chart vs values), and referenced ConfigMaps updated. `unread` names any source that " +
+      "could not be read — a change there is UNKNOWN, not absent. Use first for 'what changed before this broke?'.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        namespace: { type: "string", description: "Namespace (default: default)" },
+        sinceHours: { type: "number", description: "Window in hours, 1-168 (default 24)" },
+      },
+    },
+    handler: h.getChangeTimeline,
+  },
+  {
     name: "k8s_list_pvs",
     description: "List PersistentVolumes (cluster-scoped): phase (Bound/Available/Released/Failed), capacity, storageClass, reclaimPolicy, bound claim — for storage incidents",
     inputSchema: { type: "object", properties: {} },
