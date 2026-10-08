@@ -14,6 +14,16 @@ const ok: TimelineSources = {
 };
 const boom = (m: string) => async () => { throw new Error(m); };
 
+// Shape of @kubernetes/client-node ApiException (see src/utils/errors/index.test.ts): a huge
+// multi-line .message dump plus the API's real reason nested in the raw-JSON .body.
+const apiException = () =>
+  Object.assign(
+    new Error(
+      'HTTP-Code: 403\nMessage: Unknown API Status Code!\nBody: "{\\"kind\\":\\"Status\\"}"\nHeaders: {"audit-id":"x"}'
+    ),
+    { body: '{"kind":"Status","status":"Failure","message":"helmreleases.helm.toolkit.fluxcd.io is forbidden","code":403}' }
+  );
+
 test("all sources read: merged newest first, HelmReleases listed, nothing unread", async () => {
   const r = await buildTimeline(ok, "apps", 24, NOW);
   assert.deepEqual(r.changes.map((c) => c.workload), ["Deployment/api", "HelmRelease/api", "ConfigMap/cfg"]);
@@ -33,6 +43,14 @@ test("rollouts unread: every ConfigMap updated in the window counts", async () =
   const r = await buildTimeline({ ...ok, rollouts: boom("timeout") }, "apps", 24, NOW);
   assert.deepEqual(r.unread, ["rollout: timeout"]);
   assert.deepEqual(r.changes.filter((c) => c.source === "config").map((c) => c.workload).sort(), ["ConfigMap/cfg", "ConfigMap/unrelated"]);
+});
+
+test("an ApiException-shaped failure is reduced to its concise reason in unread, not the raw HTTP dump", async () => {
+  const r = await buildTimeline({ ...ok, helmReleases: async () => { throw apiException(); } }, "apps", 24, NOW);
+  assert.equal(r.unread.length, 1);
+  assert.ok(r.unread[0].includes("forbidden"), r.unread[0]);
+  assert.ok(!r.unread[0].includes("Headers"), r.unread[0]);
+  assert.ok(!r.unread[0].includes("HTTP-Code"), r.unread[0]);
 });
 
 test("capped at 50 changes", async () => {

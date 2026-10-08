@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getApi, k8s } from "../client.js";
 import { NS } from "../schemas.js";
+import { conciseCause } from "../../../utils/errors/index.js";
 import {
   configChanges, helmChanges, referencedConfigMaps, rolloutChanges,
   type Change, type ConfigMapMeta, type HelmHistoryEntry, type PodTemplate, type Revision,
@@ -24,7 +25,10 @@ export interface TimelineResult {
 }
 
 const MAX_CHANGES = 50;
-const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e)).slice(0, 200);
+// ApiException's .message is a multi-line HTTP dump (status/body/headers); conciseCause()
+// pulls the API's own reason out of the parsed .body instead — same helper withUpstream()
+// uses elsewhere, so `unread` reads like every other upstream-failure message in this server.
+const msg = (e: unknown): string => conciseCause(e).slice(0, 200);
 
 export async function buildTimeline(src: TimelineSources, namespace: string, sinceHours: number, now = new Date()): Promise<TimelineResult> {
   const w = { from: new Date(now.getTime() - sinceHours * 3_600_000), to: now };
