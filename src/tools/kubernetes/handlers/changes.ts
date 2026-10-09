@@ -9,7 +9,7 @@ export interface FieldDiff { field: string; from: string; to: string }
 export interface Change {
   at: string;
   source: "rollout" | "helm" | "config";
-  kind: "spec-change" | "restart" | "chart-upgrade" | "values-changed" | "config-updated" | "created";
+  kind: "spec-change" | "restart" | "chart-upgrade" | "values-changed" | "config-updated" | "created" | "deployed";
   workload: string;
   revision?: string;
   diff?: FieldDiff[];
@@ -126,7 +126,11 @@ export function helmChanges(hr: string, history: HelmHistoryEntry[], w: Window):
     if (!inWindow(e.lastDeployed, w)) return;
     const base = { at: e.lastDeployed!, source: "helm" as const, workload: `HelmRelease/${hr}`, revision: e.version === undefined ? undefined : String(e.version) };
     const older = history[i + 1];
-    if (!older) out.push({ ...base, kind: "created" });
+    // Flux keeps only a few snapshots of status.history, so "no older entry" usually means
+    // "the predecessor aged out", not "this is the first deploy" — only version 1 can claim
+    // `created`. Mirrors rolloutChanges' same "predecessor gone" case below. Anything else
+    // with no older sibling is a deploy we can see happened with no diff we can see: `deployed`.
+    if (!older) out.push({ ...base, kind: e.version === 1 ? "created" : "deployed" });
     else if (older.chartVersion !== e.chartVersion) out.push({ ...base, kind: "chart-upgrade", diff: [{ field: "chart", from: older.chartVersion ?? ABSENT, to: e.chartVersion ?? ABSENT }] });
     else if (older.configDigest !== e.configDigest) out.push({ ...base, kind: "values-changed" });
   });

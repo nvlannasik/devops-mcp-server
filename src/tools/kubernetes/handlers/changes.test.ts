@@ -73,6 +73,16 @@ test("helmChanges: chart version change is chart-upgrade, digest-only change is 
   assert.equal(c[0].workload, "HelmRelease/checkout-gateway");
 });
 
+test("helmChanges: the oldest retained history entry is `created` only at version 1; an older version with no older sibling is `deployed`, not a false `created`", () => {
+  const v1 = [{ version: 1, chartVersion: "1.0.0", configDigest: "a", lastDeployed: "2026-10-08T06:00:00Z" }];
+  assert.deepEqual(helmChanges("x", v1, W).map((c) => c.kind), ["created"]);
+
+  // Flux keeps only a few snapshots: version 34 with no older sibling in status.history is a
+  // deploy we can SEE happened, but we cannot see what changed — never "created".
+  const v34 = [{ version: 34, chartVersion: "1.1.0", configDigest: "b", lastDeployed: "2026-10-08T06:00:00Z" }];
+  assert.deepEqual(helmChanges("devops-ai-stack", v34, W).map((c) => c.kind), ["deployed"]);
+});
+
 test("referencedConfigMaps reads env refs, envFrom and volumes", () => {
   const t: PodTemplate = {
     spec: {
