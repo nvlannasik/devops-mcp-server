@@ -1,4 +1,4 @@
-import { rolloutRestart, setImage, setResources, scale, deletePod, deleteOrphan, fluxReconcile } from "./handlers/remediation.js";
+import { rolloutRestart, rolloutUndo, setImage, setResources, scale, deletePod, deleteOrphan, fluxReconcile } from "./handlers/remediation.js";
 import type { Tool } from "../types.js";
 import config from "../../config/index.js";
 
@@ -30,6 +30,26 @@ const writeTools: Tool[] = [
       properties: { namespace: NS, name: NAME, kind: KIND, dry_run: DRY },
     },
     handler: rolloutRestart,
+  },
+  {
+    name: "k8s_rollout_undo",
+    description:
+      "[WRITE] Roll a Deployment back to an earlier revision's pod template (kubectl rollout undo --to-revision equivalent) — " +
+      "undoes a bad env/args/resources/probe change, which a set_image cannot when every image is :latest. " +
+      "Only in ALLOWED_REMEDIATION_NAMESPACES. Deployments only. A Flux-managed Deployment is never patched: its dry run " +
+      "returns a GitOps preview (the undo there is a revert PR). dry_run=true validates and returns the template diff.",
+    inputSchema: {
+      type: "object",
+      required: ["namespace", "name", "to_revision"],
+      properties: {
+        namespace: NS,
+        name: NAME,
+        kind: { type: "string", enum: ["deployment"], description: "Workload kind (only deployment)" },
+        to_revision: { type: "number", description: "The deployment.kubernetes.io/revision to restore" },
+        dry_run: DRY,
+      },
+    },
+    handler: rolloutUndo,
   },
   {
     name: "k8s_set_image",

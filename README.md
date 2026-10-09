@@ -28,7 +28,7 @@ npm test                       # unit tests
 | `TRANSPORT` | `stdio` or `http` | `stdio` |
 | `PORT` | HTTP port | `3000` |
 | `MCP_AUTH_TOKEN` | Bearer token required on `/mcp` (http transport). Unset = open + a startup warning. `/health` stays unauthenticated for probes | — |
-| `MCP_ENABLE_WRITE_TOOLS` | `true` registers the seven `[WRITE]` tools (see [Write tools](#write-tools-7)). Off = not even listed | `false` |
+| `MCP_ENABLE_WRITE_TOOLS` | `true` registers the eight `[WRITE]` tools (see [Write tools](#write-tools-8)). Off = not even listed | `false` |
 | `ALLOWED_REMEDIATION_NAMESPACES` | Comma-separated namespaces write tools may target. **Empty = all blocked.** `kube-system`/`kube-public`/`kube-node-lease`/`flux-system` are always blocked. Spec-mutating actions also refuse Flux/Helm-managed workloads (GitOps guard — the source of truth would revert them); `rollout_restart` stays allowed | — |
 | `MAX_SCALE_DELTA` | Max replica change per `k8s_scale` action (scale-to-zero only with `quarantine: true`) | `5` |
 | `MIN_ORPHAN_AGE_DAYS` | Minimum age before `k8s_delete_orphan` accepts an object. A value under 14 is warned about on every boot | `14` |
@@ -51,7 +51,7 @@ npm test                       # unit tests
 | `K8S_LIST_LIMIT` | Cap on items returned by namespaced list tools (pods/events/configmaps/secrets). Deliberately **not** applied to `k8s_cluster_health`, which pages through everything | `100` |
 | `LOG_LEVEL` | `error\|warn\|info\|http\|debug` | `debug` (dev), `info` (prod) |
 
-## Tools (55 read-only + 7 write)
+## Tools (55 read-only + 8 write)
 
 ### Kubernetes (37)
 
@@ -148,7 +148,7 @@ Cost/sizing questions, in `src/tools/capacity/`. `k8s_recommend_resources` is th
 | `k8s_find_unused_resources` | Orphaned/idle objects cluster-wide in one call (the `kor` question): unmounted PVCs, endpoint-less Services, workloads scaled to 0, unreferenced ConfigMaps/Secrets/ServiceAccounts. Three filters guard the claim: references from running pods **and** every workload pod template; `ownerReferences` (operator-*created*); and a match against every custom resource in the cluster (operator-*referenced*, `cross_check_crds`, default on, needs `rbac.readAllCustomResources`). `crossCheck.crdsUnreadable` non-empty ⇒ the cross-check was partial and the note says so. Still a **review** list, never a delete list |
 | `k8s_recommend_resources` | Right-sizing: configured requests/limits vs real usage (CPU p95, peak working set, CFS throttle ratio over `window`, default 24h). Returns the concrete number to change per container plus cluster-wide over-reserved CPU/memory. Flags `oom_risk`, `cpu_throttled`, `*_under_provisioned`, `no_requests`, `over_provisioned`, `no_data` |
 
-### Write tools (7)
+### Write tools (8)
 
 Registered only with `MCP_ENABLE_WRITE_TOOLS=true`, every one supports `dry_run`, and only in
 `ALLOWED_REMEDIATION_NAMESPACES`. In `devops-ai-agent` nothing calls them without a human clicking
@@ -157,6 +157,7 @@ Registered only with `MCP_ENABLE_WRITE_TOOLS=true`, every one supports `dry_run`
 | Tool | Description |
 |------|-------------|
 | `k8s_rollout_restart` | Restart a Deployment/StatefulSet/DaemonSet (reconcile-safe, allowed on GitOps-managed workloads) |
+| `k8s_rollout_undo` | Roll a Deployment back to an earlier revision's pod template (kubectl rollout undo --to-revision equivalent) — undoes a bad env/args/resources/probe change, which a set_image cannot when every image is :latest. Deployments only. Refused on Flux-managed workloads (dry run returns a GitOps preview instead; the undo there is a revert PR) |
 | `k8s_set_image` | Change one container's image. `container` optional on a single-container workload. Refused on Flux/Helm-managed workloads |
 | `k8s_set_resources` | Patch requests/limits — only the values given. Refused on Flux/Helm-managed workloads |
 | `k8s_scale` | Change replicas within `MAX_SCALE_DELTA`; zero only with `quarantine: true` (reversible "looks unused"). Refused on Flux/Helm-managed workloads |

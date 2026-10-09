@@ -1,6 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildResourcesPatch, findContainer, findRecreatingOwner, resourceChanges, orphanRefusal, restorableManifest, type OrphanCheck } from "./remediation.js";
+import {
+  buildResourcesPatch,
+  findContainer,
+  findRecreatingOwner,
+  resourceChanges,
+  orphanRefusal,
+  restorableManifest,
+  pickRevision,
+  templateForUndo,
+  type OrphanCheck,
+} from "./remediation.js";
 import config from "../../../config/index.js";
 
 test("resourceChanges maps provided fields to {field,from,to}, from current or (unset)", () => {
@@ -210,4 +220,25 @@ test("a ServiceAccount keeps the fields that are its whole content", () => {
   });
   assert.deepEqual(m.secrets, [{ name: "deployer-token" }]);
   assert.deepEqual(m.imagePullSecrets, [{ name: "regcred" }]);
+});
+
+// ── k8s_rollout_undo ────────────────────────────────────────────────────────
+
+const rs = (uid: string, rev: string, image: string) => ({
+  metadata: { annotations: { "deployment.kubernetes.io/revision": rev }, ownerReferences: [{ controller: true, kind: "Deployment", uid }] },
+  spec: { template: { metadata: { labels: { app: "w", "pod-template-hash": "abc123" } }, spec: { containers: [{ name: "c", image }] } } },
+});
+
+test("pickRevision: the owned ReplicaSet with that revision, never another Deployment's", () => {
+  const items = [rs("other", "1", "x:1"), rs("me", "1", "w:1"), rs("me", "2", "w:2")];
+  assert.equal(pickRevision(items, "me", 1)?.spec?.template?.spec?.containers?.[0].image, "w:1");
+  assert.equal(pickRevision(items, "me", 3), null, "a revision GC'd by revisionHistoryLimit is null, not a guess");
+});
+
+test("templateForUndo drops pod-template-hash and keeps everything else, without mutating its input", () => {
+  const src = rs("me", "1", "w:1").spec.template;
+  const t = templateForUndo(src);
+  assert.deepEqual(t.metadata?.labels, { app: "w" });
+  assert.equal(t.spec?.containers?.[0].image, "w:1");
+  assert.equal(src.metadata.labels["pod-template-hash"], "abc123");
 });
