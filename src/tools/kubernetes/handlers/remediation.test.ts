@@ -9,9 +9,13 @@ import {
   restorableManifest,
   pickRevision,
   templateForUndo,
+  rolloutUndo,
+  undoPatchBody,
   type OrphanCheck,
 } from "./remediation.js";
 import config from "../../../config/index.js";
+import { k8s } from "../client.js";
+import { ValidationError } from "../../../utils/errors/index.js";
 
 test("resourceChanges maps provided fields to {field,from,to}, from current or (unset)", () => {
   const cur = { requests: { cpu: "100m" }, limits: { memory: "512Mi" } };
@@ -242,3 +246,93 @@ test("templateForUndo drops pod-template-hash and keeps everything else, without
   assert.equal(t.spec?.containers?.[0].image, "w:1");
   assert.equal(src.metadata.labels["pod-template-hash"], "abc123");
 });
+
+// ── k8s_rollout_undo handler (fake API client) ──────────────────────────────
+// The handler reads the Deployment, lists ReplicaSets and patches; the client below stands in
+// for the API server so the ORDER of refusals and the patch body are what is under test.
+
+const fakeApps = {
+  deployment: {} as Record<string, unknown>,
+  rs: [] as unknown[],
+  patches: [] as unknown[],
+  patchError: null as unknown,
+  readNamespacedDeployment: async () => fakeApps.deployment,
+  listNamespacedReplicaSet: async () => ({ items: fakeApps.rs }),
+  patchNamespacedDeployment: async (args: { body: unknown }) => {
+    fakeApps.patches.push(args.body);
+    if (fakeApps.patchError) throw fakeApps.patchError;
+    return {};
+  },
+};
+k8s.KubeConfig.prototype.loadFromFile = function () {};
+k8s.KubeConfig.prototype.loadFromCluster = function () {};
+k8s.KubeConfig.prototype.makeApiClient = (() => fakeApps) as never;
+
+const deploy = (rev: string | undefined, labels: Record<string, string> = {}) => ({
+  metadata: { uid: "me", labels, annotations: rev === undefined ? {} : { "deployment.kubernetes.io/revision": rev } },
+  spec: { template: { metadata: { labels: { app: "w" } }, spec: { containers: [{ name: "c", image: "w:3" }] } } },
+});
+const FLUX = { "helm.toolkit.fluxcd.io/name": "api", "helm.toolkit.fluxcd.io/namespace": "flux-app" };
+
+async function withUndoEnv(fn: () => Promise<void>) {
+  const original = config.writeTools.allowedNamespaces;
+  config.writeTools.allowedNamespaces = ["apps"];
+  fakeApps.patches = [];
+  fakeApps.patchError = null;
+  try {
+    await fn();
+  } finally {
+    config.writeTools.allowedNamespaces = original;
+  }
+}
+
+test("rolloutUndo: a Flux preview carries the live fromRevision, before any ReplicaSet refusal", () =>
+  withUndoEnv(async () => {
+    fakeApps.deployment = deploy("3", FLUX);
+    fakeApps.rs = []; // a revert PR needs no ReplicaSet — this must not refuse
+    const out = (await rolloutUndo({ namespace: "apps", name: "api", to_revision: 2, dry_run: true })) as Record<string, unknown>;
+    assert.equal(out.gitOpsPrEligible, true);
+    assert.equal(out.action, "rollback");
+    assert.equal(out.fromRevision, 3);
+    assert.equal(out.toRevision, 2);
+    fakeApps.deployment = deploy("2", FLUX);
+    const same = (await rolloutUndo({ namespace: "apps", name: "api", to_revision: 2, dry_run: true })) as Record<string, unknown>;
+    assert.equal(same.gitOpsPrEligible, true, "'already at this revision' is a cluster-path refusal, not a revert-PR one");
+    assert.equal(fakeApps.patches.length, 0, "a Flux workload is never patched");
+  }));
+
+test("rolloutUndo: a Deployment with no revision annotation is refused, not patched with NaN", () =>
+  withUndoEnv(async () => {
+    fakeApps.deployment = deploy(undefined);
+    fakeApps.rs = [rs("me", "1", "w:1")];
+    await assert.rejects(rolloutUndo({ namespace: "apps", name: "api", to_revision: 1, dry_run: true }), (e: Error) => {
+      assert.ok(e instanceof ValidationError);
+      assert.match(e.message, /`apps\/api` has no revision annotation yet — the deployment controller has not observed it; retry shortly/);
+      return true;
+    });
+    assert.equal(fakeApps.patches.length, 0);
+  }));
+
+test("undoPatchBody: the revision test op only when from_revision is given, and first", () => {
+  const t = { spec: { containers: [] } };
+  assert.deepEqual(undoPatchBody(t), [{ op: "replace", path: "/spec/template", value: t }]);
+  assert.deepEqual(undoPatchBody(t, 4), [
+    { op: "test", path: "/metadata/annotations/deployment.kubernetes.io~1revision", value: "4" },
+    { op: "replace", path: "/spec/template", value: t },
+  ]);
+});
+
+test("rolloutUndo: from_revision reaches the patch, and a failed test op names the move", () =>
+  withUndoEnv(async () => {
+    fakeApps.deployment = deploy("3");
+    fakeApps.rs = [rs("me", "2", "w:2"), rs("me", "3", "w:3")];
+    await rolloutUndo({ namespace: "apps", name: "api", to_revision: 2, from_revision: 3 });
+    assert.equal((fakeApps.patches[0] as Array<{ op: string }>)[0].op, "test");
+
+    fakeApps.patchError = new k8s.ApiException(422, "Unprocessable Entity", JSON.stringify({ kind: "Status", message: "the server rejected our request due to an error in our request: testing value /metadata/annotations/deployment.kubernetes.io~1revision failed: test failed", code: 422 }), {});
+    await assert.rejects(rolloutUndo({ namespace: "apps", name: "api", to_revision: 2, from_revision: 3 }), (e: Error) => {
+      assert.ok(e instanceof ValidationError, `got ${e.name}: ${e.message}`);
+      assert.equal(e.message, "`apps/api` moved from revision 3 since the card was proposed — re-investigate");
+      return true;
+    });
+  }));

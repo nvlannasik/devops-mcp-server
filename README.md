@@ -157,7 +157,7 @@ Registered only with `MCP_ENABLE_WRITE_TOOLS=true`, every one supports `dry_run`
 | Tool | Description |
 |------|-------------|
 | `k8s_rollout_restart` | Restart a Deployment/StatefulSet/DaemonSet (reconcile-safe, allowed on GitOps-managed workloads) |
-| `k8s_rollout_undo` | Roll a Deployment back to an earlier revision's pod template (kubectl rollout undo --to-revision equivalent) — undoes a bad env/args/resources/probe change, which a set_image cannot when every image is :latest. Deployments only. Refused on Flux-managed workloads (dry run returns a GitOps preview instead; the undo there is a revert PR) |
+| `k8s_rollout_undo` | Roll a Deployment back to an earlier revision's pod template (kubectl rollout undo --to-revision equivalent) — undoes a bad env/args/resources/probe change, which a set_image cannot when every image is :latest. Deployments only. Refused on Flux-managed workloads (dry run returns a GitOps preview carrying `fromRevision`/`toRevision` instead; the undo there is a revert PR). Optional `from_revision`: the live revision the approval was proposed against — the JSON patch tests the revision annotation first, so if the Deployment moved since, the API server rejects it and nothing changes |
 | `k8s_set_image` | Change one container's image. `container` optional on a single-container workload. Refused on Flux/Helm-managed workloads |
 | `k8s_set_resources` | Patch requests/limits — only the values given. Refused on Flux/Helm-managed workloads |
 | `k8s_scale` | Change replicas within `MAX_SCALE_DELTA`; zero only with `quarantine: true` (reversible "looks unused"). Refused on Flux/Helm-managed workloads |

@@ -46,6 +46,10 @@ const writeTools: Tool[] = [
         name: NAME,
         kind: { type: "string", enum: ["deployment"], description: "Workload kind (only deployment)" },
         to_revision: { type: "number", description: "The deployment.kubernetes.io/revision to restore" },
+        from_revision: {
+          type: "number",
+          description: "Optional: the live revision this rollback was approved against. The patch tests it first and is refused if the Deployment has moved since",
+        },
         dry_run: DRY,
       },
     },
