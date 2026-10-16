@@ -3,17 +3,20 @@ import { getApi, k8s, listAll } from "../client.js";
 import { withUpstream } from "../../../utils/errors/index.js";
 import { blankToUndefined } from "../schemas.js";
 import { gitOpsVerdict } from "../guardrails.js";
+import { configMapRefs, envDeps, type ContainerEnv, type EnvDeps } from "./dependency-hosts.js";
 
 // The whole cluster's workloads, their owners and what they expose, in ONE call — the onboarding
 // counterpart of k8s_cluster_health. Every other list tool is per-namespace, so "what runs here"
-// cost one call per namespace per kind. Names, counts, images, ports and hosts only: no env, no
-// ConfigMap/Secret content, no annotation text — small, and nothing in it is free text to inject.
+// cost one call per namespace per kind. Names, counts, images, ports and hosts. Env and ConfigMap
+// VALUES are read only to find what a workload is configured to depend on (dependency-hosts.ts) and
+// never returned — the output carries env names and matched Services. No Secret is resolved, and no
+// annotation text is returned — nothing in it is free text to inject.
 
 const SYSTEM = new Set(["kube-system", "kube-public", "kube-node-lease", "flux-system"]);
 
 type Labels = Record<string, string> | undefined;
 interface Obj { metadata?: { name?: string; namespace?: string; labels?: Labels } }
-interface PodSpecHolder { metadata?: { labels?: Record<string, string> }; spec?: { containers?: Array<{ image?: string }> } }
+interface PodSpecHolder { metadata?: { labels?: Record<string, string> }; spec?: { containers?: Array<{ image?: string } & ContainerEnv> } }
 interface WorkloadObj extends Obj { spec?: { replicas?: number; template?: PodSpecHolder }; status?: { readyReplicas?: number; numberReady?: number; desiredNumberScheduled?: number } }
 interface CronObj extends Obj { spec?: { schedule?: string; jobTemplate?: { spec?: { template?: PodSpecHolder } } } }
 interface ServiceObj extends Obj { spec?: { type?: string; selector?: Record<string, string>; ports?: Array<{ port?: number; protocol?: string; targetPort?: number | string }> } }
@@ -21,7 +24,7 @@ type BackendRef = { service?: { name?: string } };
 interface IngressObj extends Obj {
   spec?: { defaultBackend?: BackendRef; rules?: Array<{ host?: string; http?: { paths?: Array<{ backend?: BackendRef }> } }> };
 }
-interface KustomizationObj { metadata: { name: string; namespace: string }; spec?: { path?: string } }
+interface KustomizationObj { metadata: { name: string; namespace: string }; spec?: { path?: string }; status?: { lastAppliedRevision?: string } }
 
 export type ManagedBy =
   | { type: "helmrelease"; name: string; namespace: string; chart?: string }
@@ -29,7 +32,7 @@ export type ManagedBy =
   | { type: "helm"; chart?: string }
   | { type: "unmanaged" };
 
-export interface InventoryWorkload {
+export interface InventoryWorkload extends EnvDeps {
   kind: "Deployment" | "StatefulSet" | "DaemonSet" | "CronJob";
   name: string; ready: number | null; desired: number | null; images: string[]; managedBy: ManagedBy; schedule?: string;
 }
@@ -44,6 +47,10 @@ export interface InventoryInput {
   ingresses: IngressObj[];
   /** null = the CR list was refused (RBAC) — paths are then absent, not guessed. */
   kustomizations: KustomizationObj[] | null;
+  /** The ConfigMaps workloads reference (values used for dependency matching only). null = the read was refused. */
+  configMaps?: Array<{ metadata?: { name?: string; namespace?: string }; data?: Record<string, string> }> | null;
+  /** Every Service cluster-wide as "ns/name" — a dependency on `postgresql.postgresql` resolves on a namespace-scoped call too. */
+  allServices?: string[];
   complete: boolean;
 }
 
@@ -66,6 +73,12 @@ export function shapeInventory(input: InventoryInput) {
   const paths = new Map(
     (input.kustomizations ?? []).filter((k) => k.spec?.path).map((k) => [`${k.metadata.namespace}/${k.metadata.name}`, k.spec!.path!] as const)
   );
+  const svcSet = new Set(input.allServices ?? input.services.map((s) => `${s.metadata?.namespace}/${s.metadata?.name}`));
+  const cmMap =
+    input.configMaps === null
+      ? null
+      : new Map((input.configMaps ?? []).map((c) => [`${c.metadata?.namespace ?? ""}/${c.metadata?.name ?? ""}`, c.data ?? {}] as const));
+  const deps = (o: Obj, t: PodSpecHolder | undefined) => envDeps(t?.spec?.containers ?? [], o.metadata?.namespace ?? "", svcSet, cmMap);
   const byNs = new Map(
     input.namespaces.map((name) => [name, {
       name, system: SYSTEM.has(name),
@@ -77,7 +90,7 @@ export function shapeInventory(input: InventoryInput) {
   const at = (o: Obj) => byNs.get(o.metadata?.namespace ?? "");
   const owner = (o: Obj) => managedBy(o.metadata?.labels, paths);
   const workload = (kind: InventoryWorkload["kind"], o: WorkloadObj, ready: number, desired: number | null) =>
-    at(o)?.workloads.push({ kind, name: o.metadata?.name ?? "", ready, desired, images: images(o.spec?.template), managedBy: owner(o) });
+    at(o)?.workloads.push({ kind, name: o.metadata?.name ?? "", ready, desired, images: images(o.spec?.template), managedBy: owner(o), ...deps(o, o.spec?.template) });
   for (const d of input.deployments) workload("Deployment", d, d.status?.readyReplicas ?? 0, d.spec?.replicas ?? null);
   for (const s of input.statefulsets) workload("StatefulSet", s, s.status?.readyReplicas ?? 0, s.spec?.replicas ?? null);
   for (const d of input.daemonsets) workload("DaemonSet", d, d.status?.numberReady ?? 0, d.status?.desiredNumberScheduled ?? null);
@@ -85,6 +98,7 @@ export function shapeInventory(input: InventoryInput) {
     at(c)?.workloads.push({
       kind: "CronJob", name: c.metadata?.name ?? "", ready: null, desired: null,
       images: images(c.spec?.jobTemplate?.spec?.template), managedBy: owner(c), schedule: c.spec?.schedule,
+      ...deps(c, c.spec?.jobTemplate?.spec?.template),
     });
   // What a Service's selector can reach: pod-template labels of the namespace's long-running
   // workloads. A CronJob's pods are not a Service backend, so they are not candidates.
@@ -123,7 +137,10 @@ export function shapeInventory(input: InventoryInput) {
       name: i.metadata?.name ?? "", hosts: (i.spec?.rules ?? []).map((r) => r.host).filter((h): h is string => !!h), backends: backends(i),
     });
   const namespaces = [...byNs.values()].sort((a, b) => Number(a.system) - Number(b.system) || a.name.localeCompare(b.name));
-  return { scanned: { namespaces: namespaces.length, complete: input.complete }, namespaces };
+  const fluxRevisions = (input.kustomizations ?? [])
+    .filter((k) => k.status?.lastAppliedRevision)
+    .map((k) => ({ kustomization: `${k.metadata.namespace}/${k.metadata.name}`, revision: k.status!.lastAppliedRevision! }));
+  return { scanned: { namespaces: namespaces.length, complete: input.complete, configMaps: input.configMaps !== null }, namespaces, fluxRevisions };
 }
 export type Inventory = ReturnType<typeof shapeInventory>;
 
@@ -177,11 +194,38 @@ export const clusterInventory = (raw: unknown) => {
       .listCustomObjectForAllNamespaces({ group: "kustomize.toolkit.fluxcd.io", version: "v1", plural: "kustomizations" })
       .then((r) => (r as { items?: KustomizationObj[] }).items ?? [])
       .catch(() => null);
+    // Services cluster-wide for dependency matching, even on a namespace-scoped call — a dependency
+    // on `postgresql.postgresql` must resolve while only `sample-apps` is being toured.
+    const allSvc = namespace
+      ? await listAll<ServiceObj>((o) => core.listServiceForAllNamespaces(o) as P<ServiceObj>).then((l) => l.items).catch(() => svcs.items)
+      : svcs.items;
+    // Only the ConfigMaps a workload references. A refusal (RBAC) makes the whole read null — said so
+    // in scanned.configMaps; a 404 is just a ConfigMap that is not there.
+    const templates = [
+      ...[...deps.items, ...sts.items, ...dss.items].map((w) => ({ ns: w.metadata?.namespace ?? "", t: w.spec?.template })),
+      ...crons.items.map((c) => ({ ns: c.metadata?.namespace ?? "", t: c.spec?.jobTemplate?.spec?.template })),
+    ];
+    const refs = [...new Set(templates.flatMap(({ ns, t }) => configMapRefs(t?.spec?.containers ?? [], ns)))];
+    type Cm = { metadata?: { name?: string; namespace?: string }; data?: Record<string, string> };
+    const configMaps = await Promise.all(
+      refs.map((ref) => {
+        const [ns, name] = ref.split("/") as [string, string];
+        return (core.readNamespacedConfigMap({ name, namespace: ns }) as Promise<Cm>).catch((e: unknown) => {
+          const code = (e as { code?: number }).code;
+          if (code === 404 || /404|not found/i.test(String((e as Error)?.message ?? e))) return null;
+          throw e;
+        });
+      })
+    )
+      .then((list) => list.filter((c): c is Cm => c !== null))
+      .catch(() => null);
     const inv = shapeInventory({
       namespaces: nsList.items.map((n) => n.metadata?.name).filter((n): n is string => !!n),
       deployments: deps.items, statefulsets: sts.items, daemonsets: dss.items,
       cronjobs: crons.items, services: svcs.items, ingresses: ings.items,
       kustomizations,
+      configMaps,
+      allServices: allSvc.map((s) => `${s.metadata?.namespace}/${s.metadata?.name}`),
       complete: [nsList, deps, sts, dss, crons, svcs, ings].every((l) => l.complete),
     });
     return (detail ?? !!namespace) ? inv : overviewOf(inv);

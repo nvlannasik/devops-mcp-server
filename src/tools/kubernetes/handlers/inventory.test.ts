@@ -58,7 +58,7 @@ test("unreadable Kustomizations leave the path absent, never guessed", () => {
 
 test("system namespaces sort last, and complete:false survives to the caller", () => {
   const out = shapeInventory({ ...base, complete: false });
-  assert.deepEqual(out.scanned, { namespaces: 3, complete: false });
+  assert.deepEqual(out.scanned, { namespaces: 3, complete: false, configMaps: true });
   assert.equal(out.namespaces.at(-1)!.name, "kube-system");
 });
 
@@ -74,7 +74,7 @@ test("the overview is one line per workload — owner included, images and ports
   assert.ok(ns.workloads.includes("CronJob nightly — helm"));
   assert.deepEqual(ns.hosts, ["shop.example.com"]);
   assert.doesNotMatch(JSON.stringify(ov), /ghcr\.io|80\/TCP/);
-  assert.deepEqual(ov.scanned, { namespaces: 3, complete: true });
+  assert.deepEqual(ov.scanned, { namespaces: 3, complete: true, configMaps: true });
   assert.match(ov.detail, /namespace/);
 });
 
@@ -113,4 +113,47 @@ test("backends: each path with its host, '*' for no host and the default backend
 
 test("the overview carries no relations — the tour's budget is unchanged", () => {
   assert.doesNotMatch(JSON.stringify(overviewOf(shapeInventory(rel as any))), /serves|backends/);
+});
+
+// Onboarding v2 (spec 2026-10-16-cluster-onboarding-flow §1): configured dependencies + Flux revisions.
+const depBase = {
+  namespaces: ["sample-apps"],
+  deployments: [{
+    metadata: { name: "orders-api", namespace: "sample-apps", labels: {} },
+    spec: { replicas: 2, template: { metadata: { labels: { app: "orders-api" } }, spec: { containers: [{
+      image: "ghcr.io/x/orders-api:1.0",
+      env: [{ name: "DATABASE_URL", value: "postgres://app:s3cret@postgresql.postgresql:5432/db" }],
+      envFrom: [{ configMapRef: { name: "orders-config" } }],
+    }] } } },
+    status: { readyReplicas: 2 },
+  }],
+  statefulsets: [], daemonsets: [], cronjobs: [],
+  services: [{ metadata: { name: "orders-api", namespace: "sample-apps" }, spec: { selector: { app: "orders-api" }, ports: [{ port: 80 }] } }],
+  ingresses: [],
+  kustomizations: [{ metadata: { name: "apps", namespace: "flux-app" }, spec: { path: "./apps/dev" }, status: { lastAppliedRevision: "main@sha1:aca660bbecc28f4088c4648db952e1bbdd915c16" } }],
+  configMaps: [{ metadata: { name: "orders-config", namespace: "sample-apps" }, data: { CACHE_HOST: "redis-master.redis" } }],
+  allServices: ["sample-apps/orders-api", "postgresql/postgresql", "redis/redis-master"],
+  complete: true,
+};
+
+test("a workload carries its configured dependencies — matched against Services cluster-wide — and no env value", () => {
+  const inv = shapeInventory(depBase as any);
+  const w = inv.namespaces[0]!.workloads[0]! as any;
+  assert.deepEqual(w.dependsOn, [
+    { service: "postgresql", namespace: "postgresql", via: "DATABASE_URL", role: "app" },
+    { service: "redis-master", namespace: "redis", via: "CACHE_HOST", role: "app" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(inv), /s3cret/);
+  assert.equal(inv.scanned.configMaps, true);
+});
+
+test("Flux applied revisions are reported, once per Kustomization", () => {
+  const inv = shapeInventory(depBase as any) as any;
+  assert.deepEqual(inv.fluxRevisions, [{ kustomization: "flux-app/apps", revision: "main@sha1:aca660bbecc28f4088c4648db952e1bbdd915c16" }]);
+});
+
+test("a refused ConfigMap read: literal env still resolves, scanned.configMaps says so", () => {
+  const inv = shapeInventory({ ...depBase, configMaps: null } as any);
+  assert.equal(inv.scanned.configMaps, false);
+  assert.equal((inv.namespaces[0]!.workloads[0] as any).dependsOn.length, 1);
 });
