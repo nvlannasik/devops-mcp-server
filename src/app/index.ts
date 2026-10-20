@@ -2,19 +2,14 @@ import { createServer, type Server } from "http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { z, type ZodTypeAny } from "zod";
 import express, { type Request, type Response } from "express";
 import axios from "axios";
 import crypto from "crypto";
 import logger, { logWithContext } from "../utils/logger/log.js";
 import allTools from "../tools/index.js";
 import config from "../config/index.js";
-import { withTimeout } from "../utils/timeout/index.js";
-import { UpstreamError, ValidationError } from "../utils/errors/index.js";
-
-// hard ceiling per tool call — sits just above the upstream HTTP/K8s timeouts so
-// their specific errors surface first, but still bounds anything that ignores them
-const TOOL_HANDLER_TIMEOUT_MS = config.upstreamTimeoutMs + 5000;
+import { invokeTool, jsonSchemaToZod, type InputSchema } from "./invoke.js";
+export { jsonSchemaToZod } from "./invoke.js";
 
 // Constant-time string compare. Hash first so inputs are always equal length
 // (timingSafeEqual throws on length mismatch) and the token length never leaks.
@@ -24,35 +19,7 @@ export function timingSafeEqualStr(a: string, b: string): boolean {
   return crypto.timingSafeEqual(ah, bh);
 }
 
-type PropSchema = { type?: string; enum?: string[]; description?: string; items?: { type?: string } };
-type InputSchema = { properties?: Record<string, PropSchema>; required?: string[] };
 
-export function jsonSchemaToZod(schema: InputSchema): Record<string, ZodTypeAny> {
-  if (!schema?.properties) return {};
-  return Object.fromEntries(
-    Object.entries(schema.properties).map(([key, prop]) => {
-      let zodType: ZodTypeAny;
-      if (prop.type === "number") zodType = z.number();
-      else if (prop.type === "boolean") zodType = z.boolean();
-      else if (prop.enum) zodType = z.enum(prop.enum as [string, ...string[]]);
-      // Arrays had no case here, so they fell through to z.string() — and since the SDK
-      // derives the ADVERTISED schema from this shape, not from tool.inputSchema, an array
-      // param was published to the model as a string. It then sent one, the SDK accepted it,
-      // and the handler's own z.array() rejected it. z.preprocess still publishes as
-      // `type: array`, and absorbs the string a small model sends anyway ("" = no filter).
-      else if (prop.type === "array")
-        zodType = z.preprocess(
-          (v) => (typeof v === "string" ? (v ? [v] : []) : v),
-          z.array(prop.items?.type === "number" ? z.number() : z.string())
-        );
-      else zodType = z.string();
-
-      if (prop.description) zodType = zodType.describe(prop.description);
-      const required = schema.required?.includes(key);
-      return [key, required ? zodType : zodType.optional()];
-    })
-  );
-}
 
 export default class AppServer {
   private server: McpServer;
@@ -96,56 +63,10 @@ export default class AppServer {
     for (const tool of allTools) {
       const shape = jsonSchemaToZod(tool.inputSchema as InputSchema);
       server.tool(tool.name, tool.description, shape, async (args) => {
-        const start = Date.now();
-        const inputStr = JSON.stringify(args).slice(0, 200);
-        const cid = correlationId ?? crypto.randomUUID();
-
-        logWithContext("debug", `Tool called: ${tool.name}`, {
-          correlationId: cid,
-          toolName: tool.name,
-          input: inputStr,
-        });
-
-        try {
-          const result = await withTimeout(tool.handler(args), TOOL_HANDLER_TIMEOUT_MS, `tool ${tool.name}`);
-          const duration = Date.now() - start;
-          const resultStr = JSON.stringify(result);
-          const resultSize = Buffer.byteLength(resultStr, "utf8");
-
-          logWithContext("info", `Tool executed: ${tool.name}`, {
-            correlationId: cid,
-            toolName: tool.name,
-            status: "ok",
-            duration,
-            resultSize: `${(resultSize / 1024).toFixed(2)}KB`,
-          });
-
-          return { content: [{ type: "text" as const, text: resultStr }] };
-        } catch (err) {
-          const duration = Date.now() - start;
-          const errorMsg = err instanceof Error ? err.message : String(err);
-
-          // Expected operational failures (upstream down, pod not found, bad input) log as
-          // one line — a stack of wrapper frames adds nothing. Unexpected errors keep the
-          // stack: those are the actual bugs.
-          const expected = err instanceof UpstreamError || err instanceof ValidationError;
-          logWithContext("error", `Tool failed: ${tool.name}`, {
-            correlationId: cid,
-            toolName: tool.name,
-            status: "error",
-            duration,
-            // the args are logged at debug only, so in prod (info) a failure used to
-            // arrive with no way to tell WHICH call broke — repeat them on the error path
-            input: inputStr,
-            error: errorMsg,
-            ...(expected ? {} : { stack: err instanceof Error ? err.stack : undefined }),
-          });
-
-          return {
-            content: [{ type: "text" as const, text: `Error: ${errorMsg}` }],
-            isError: true,
-          };
-        }
+        const { text, isError } = await invokeTool(tool, args, correlationId);
+        return isError
+          ? { content: [{ type: "text" as const, text }], isError: true }
+          : { content: [{ type: "text" as const, text }] };
       });
     }
   }
