@@ -11,6 +11,7 @@
     "test": "node --import tsx --test 'src/**/*.test.ts'"
   },
   "dependencies": {
+    "@aws-sdk/client-sqs": "3.1058.0",
     "@kubernetes/client-node": "1.4.0",
     "@modelcontextprotocol/sdk": "1.31.0",
     "axios": "1.20.0",

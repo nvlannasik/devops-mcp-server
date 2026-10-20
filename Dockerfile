@@ -16,9 +16,37 @@ COPY src/ ./src/
 RUN npm run build
 
 
+# aws_signing_helper for the SQS bridge (TRANSPORT=sqs, IAM Roles Anywhere) — the same stage the
+# agent and llm-worker images carry. Smoke-tested in the runtime stage, once gcompat is there.
+FROM alpine:3.20 AS aws-tools
+
+ARG TARGETARCH
+ARG SIGNING_HELPER_VERSION=1.8.4
+
+RUN apk add --no-cache curl && \
+    case "$TARGETARCH" in \
+      amd64) ARCH="X86_64" ;; \
+      arm64) ARCH="Aarch64" ;; \
+      *)     echo "Unsupported arch: $TARGETARCH" && exit 1 ;; \
+    esac && \
+    curl -fLo /aws_signing_helper \
+      "https://rolesanywhere.amazonaws.com/releases/${SIGNING_HELPER_VERSION}/${ARCH}/Linux/Amzn2023/aws_signing_helper" && \
+    chmod +x /aws_signing_helper
+
+
 FROM node:24-alpine AS runtime
 
 WORKDIR /app
+
+# gcompat: glibc compatibility for aws_signing_helper (a glibc binary); openssl: entrypoint.sh's
+# certificate expiry check
+RUN apk add --no-cache gcompat openssl
+
+COPY --from=aws-tools /aws_signing_helper /usr/local/bin/aws_signing_helper
+RUN /usr/local/bin/aws_signing_helper version
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 COPY package*.json ./
 RUN npm ci --omit=dev
@@ -30,4 +58,6 @@ ENV PORT=3000
 
 EXPOSE 3000
 
+# AWS credentials are set up only when TRANSPORT=sqs; the HTTP server starts exactly as before.
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["node", "dist/index.js"]

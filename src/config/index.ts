@@ -71,6 +71,17 @@ const config = {
     username: process.env.TRACING_USERNAME,
     password: process.env.TRACING_PASSWORD,
   },
+  // TRANSPORT=sqs: the bridge for a cluster that accepts no inbound traffic (spec
+  // 2026-10-15-multi-cluster-sqs-bridge-design). Unused in http/stdio mode.
+  sqs: {
+    region: process.env.AWS_REGION ?? "ap-southeast-1",
+    requestQueueName: process.env.MCP_SQS_REQUEST_QUEUE ?? "",
+    responseQueueName: process.env.MCP_SQS_RESPONSE_QUEUE ?? "devops-mcp-response.fifo",
+    concurrency: parseInt(process.env.MCP_SQS_CONCURRENCY ?? "4"),
+    pollWaitSeconds: parseInt(process.env.MCP_SQS_POLL_WAIT_SECONDS ?? "20"),
+    // touched every poll iteration; the pod's exec probe checks its age (no HTTP server here)
+    heartbeatFile: process.env.MCP_SQS_HEARTBEAT_FILE ?? "/tmp/bridge-heartbeat",
+  },
 };
 
 export default config;

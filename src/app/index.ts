@@ -9,6 +9,7 @@ import logger, { logWithContext } from "../utils/logger/log.js";
 import allTools from "../tools/index.js";
 import config from "../config/index.js";
 import { invokeTool, jsonSchemaToZod, type InputSchema } from "./invoke.js";
+import { startSqsBridge } from "./sqs-loop.js";
 export { jsonSchemaToZod } from "./invoke.js";
 
 // Constant-time string compare. Hash first so inputs are always equal length
@@ -24,6 +25,8 @@ export function timingSafeEqualStr(a: string, b: string): boolean {
 export default class AppServer {
   private server: McpServer;
   private httpServer: Server | null = null;
+  private bridgeAbort: AbortController | null = null;
+  private bridgeDone: Promise<void> | null = null;
 
   constructor() {
     this.server = new McpServer({ name: "devops-mcp-server", version: "1.0.0" });
@@ -103,22 +106,30 @@ export default class AppServer {
     const transport = process.env.TRANSPORT || "stdio";
     const inCluster = !!process.env.KUBERNETES_SERVICE_HOST;
 
-    if (inCluster && transport !== "http") {
+    if (inCluster && transport !== "http" && transport !== "sqs") {
       logWithContext("error", "Invalid transport configuration for cluster deployment", {
         inCluster: true,
         transport,
-        required: "http",
+        required: "http or sqs",
       });
       process.exit(1);
     }
 
-    await this._checkUpstreams();
+    // A bridge's observability URLs belong to the central server: probing them from a workload
+    // cluster only produces false alarms.
+    if (transport !== "sqs") await this._checkUpstreams();
 
-    if (transport === "http") {
-      await this._startHttp();
-    } else {
-      await this._startStdio();
-    }
+    if (transport === "http") await this._startHttp();
+    else if (transport === "sqs") this._startSqs();
+    else await this._startStdio();
+  }
+
+  private _startSqs(): void {
+    this.bridgeAbort = new AbortController();
+    this.bridgeDone = startSqsBridge(this.bridgeAbort.signal).catch((err: unknown) => {
+      logWithContext("error", `SQS bridge failed: ${err instanceof Error ? err.message : String(err)}`, {});
+      process.exit(1);
+    });
   }
 
   private async _startStdio(): Promise<void> {
@@ -210,6 +221,7 @@ export default class AppServer {
   }
 
   async stop(): Promise<void> {
+    if (this.bridgeAbort) { this.bridgeAbort.abort(); await this.bridgeDone; }
     await new Promise<void>((resolve) => {
       if (!this.httpServer) { resolve(); return; }
       this.httpServer.close(() => resolve());
