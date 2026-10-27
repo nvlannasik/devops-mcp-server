@@ -48,3 +48,10 @@ architecture and design decisions.
 ## Working style
 - Chat in Indonesian; keep technical/English terms untranslated. **Docs are written in English.**
 - Don't commit or push unless asked.
+
+## Tracing (OpenTelemetry, 2026-10-27)
+- **Started by a preload, never from `index.ts`** (`src/tracing/preload.ts`, `node --import` in the Dockerfile CMD). The server is ESM: an entry's imports run before its body, so an SDK started there instruments nothing, and even started first an ESM `import * as http` stays unpatched without OTel's import-in-the-middle hook — the preload registers it, then loads the SDK with `await import()` (a static import would run before `register()`). No `OTEL_EXPORTER_OTLP_ENDPOINT` → nothing registered or loaded. The server imports only `src/tracing/handle.ts` (no OTel imports) for the shutdown flush.
+- **`UrlQueryRedactor`** cuts the query string from `url.full`/`http.url`/`http.target` and blanks `url.query` before export — the Prometheus/Loki calls carry PromQL/LogQL there, and Jaeger is a published surface.
+- **SQS bridge:** each message is handled inside a CONSUMER span (`withSqsConsumerSpan`) parented on the `traceparent` **message attribute** the agent sets; the receive asks for `traceparent`/`tracestate`. The body contract is unchanged. A message without the attribute starts a new trace.
+- `src/tracing/preload.test.ts` runs a real ESM child process against a fake OTLP receiver (needs `npm run build` first) — the only test that can see the ordering bug.
+- Spec: `devops-ai-agent/docs/superpowers/specs/2026-10-27-otel-tracing-design.md`.

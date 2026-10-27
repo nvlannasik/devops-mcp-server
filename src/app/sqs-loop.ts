@@ -17,6 +17,7 @@ import allTools from "../tools/index.js";
 import writeTools from "../tools/kubernetes/write.js";
 import { invokeTool, TOOL_HANDLER_TIMEOUT_MS } from "./invoke.js";
 import { handleBridgeMessage } from "./sqs-bridge.js";
+import { withSqsConsumerSpan } from "../tracing/sqs.js";
 
 export interface PollDeps {
   sqs: { send(cmd: unknown, opts?: unknown): Promise<any> };
@@ -45,12 +46,15 @@ export async function pollRequests(signal: AbortSignal, d: PollDeps): Promise<vo
           // longer than any tool may run, so a slow read is never redelivered to a second
           // bridge replica while the first is still running it
           VisibilityTimeout: d.visibilitySeconds,
+          // The sender's trace context rides as message attributes (never the body) — see tracing/sqs.ts.
+          MessageAttributeNames: ["traceparent", "tracestate"],
         }),
         { abortSignal: signal }
       );
       for (const msg of result.Messages ?? []) {
-        const task: Promise<void> = d
-          .handle(msg.Body, msg.ReceiptHandle!)
+        const task: Promise<void> = withSqsConsumerSpan("bridge request", msg.MessageAttributes, () =>
+          d.handle(msg.Body, msg.ReceiptHandle!)
+        )
           .catch((err: unknown) => {
             logWithContext("error", `Bridge: handler failed — ${err instanceof Error ? err.message : String(err)}`, {});
           })
