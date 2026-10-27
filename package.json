@@ -32,7 +32,7 @@
     "express": "5.2.1",
     "import-in-the-middle": "3.5.3",
     "winston": "3.17.0",
-    "zod": "3.25.28"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/express": "5.0.6",
