@@ -62,8 +62,11 @@ test("the receive asks for the trace attributes, and each message is handled ins
   let receives = 0;
   const receiveInputs: any[] = [];
   const seen: Array<string | undefined> = [];
+  const { isTracingSuppressed } = await import("@opentelemetry/core");
+  const pollSuppressed: boolean[] = [];
   const sqs = {
     send: async (cmd: any) => {
+      pollSuppressed.push(isTracingSuppressed(context.active()) && !trace.getActiveSpan());
       receives++;
       receiveInputs.push(cmd.input);
       if (receives === 1) {
@@ -80,4 +83,5 @@ test("the receive asks for the trace attributes, and each message is handled ins
   });
   assert.deepEqual(receiveInputs[0].MessageAttributeNames, ["traceparent", "tracestate"]);
   assert.deepEqual(seen, [TRACE]);
+  assert.ok(pollSuppressed.length > 0 && pollSuppressed.every(Boolean), "the receive itself belongs to no trace");
 });

@@ -18,6 +18,7 @@ import writeTools from "../tools/kubernetes/write.js";
 import { invokeTool, TOOL_HANDLER_TIMEOUT_MS } from "./invoke.js";
 import { handleBridgeMessage } from "./sqs-bridge.js";
 import { withSqsConsumerSpan } from "../tracing/sqs.js";
+import { untraced } from "../tracing/untraced.js";
 
 export interface PollDeps {
   sqs: { send(cmd: unknown, opts?: unknown): Promise<any> };
@@ -38,7 +39,9 @@ export async function pollRequests(signal: AbortSignal, d: PollDeps): Promise<vo
       continue;
     }
     try {
-      const result = await d.sqs.send(
+      // The poll itself belongs to no trace (tracing/untraced.ts) — an empty receive every 20s would
+      // otherwise be a trace of its own. Each message's handling gets its consumer span below.
+      const result = await untraced(() => d.sqs.send(
         new ReceiveMessageCommand({
           QueueUrl: d.requestUrl,
           MaxNumberOfMessages: Math.min(d.concurrency - inFlight.size, 10), // SQS hard cap is 10
@@ -50,7 +53,7 @@ export async function pollRequests(signal: AbortSignal, d: PollDeps): Promise<vo
           MessageAttributeNames: ["traceparent", "tracestate"],
         }),
         { abortSignal: signal }
-      );
+      ));
       for (const msg of result.Messages ?? []) {
         const task: Promise<void> = withSqsConsumerSpan("bridge request", msg.MessageAttributes, () =>
           d.handle(msg.Body, msg.ReceiptHandle!)
