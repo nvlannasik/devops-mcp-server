@@ -5,6 +5,7 @@ import config from "../config/index.js";
 import { withTimeout } from "../utils/timeout/index.js";
 import { UpstreamError, ValidationError } from "../utils/errors/index.js";
 import type { Tool } from "../tools/types.js";
+import { redactSecrets } from "../utils/redact/index.js";
 
 // hard ceiling per tool call — sits just above the upstream HTTP/K8s timeouts so
 // their specific errors surface first, but still bounds anything that ignores them
@@ -67,7 +68,8 @@ export async function invokeTool(tool: Tool, rawArgs: unknown, correlationId?: s
   logWithContext("debug", `Tool called: ${tool.name}`, { correlationId: cid, toolName: tool.name, input: inputStr });
 
   try {
-    const result = await withTimeout(tool.handler(args), TOOL_HANDLER_TIMEOUT_MS, `tool ${tool.name}`);
+    // Secret values out before the result leaves the cluster — see utils/redact.
+    const { value: result, hits } = redactSecrets(await withTimeout(tool.handler(args), TOOL_HANDLER_TIMEOUT_MS, `tool ${tool.name}`));
     const duration = Date.now() - start;
     const resultStr = JSON.stringify(result);
     const resultSize = Buffer.byteLength(resultStr, "utf8");
@@ -77,11 +79,12 @@ export async function invokeTool(tool: Tool, rawArgs: unknown, correlationId?: s
       status: "ok",
       duration,
       resultSize: `${(resultSize / 1024).toFixed(2)}KB`,
+      ...(hits ? { redacted: hits } : {}),
     });
     return { text: resultStr, isError: false };
   } catch (err) {
     const duration = Date.now() - start;
-    const errorMsg = err instanceof Error ? err.message : String(err);
+    const errorMsg = redactSecrets(err instanceof Error ? err.message : String(err)).value;
     // Expected operational failures (upstream down, pod not found, bad input) log as
     // one line — a stack of wrapper frames adds nothing. Unexpected errors keep the
     // stack: those are the actual bugs.

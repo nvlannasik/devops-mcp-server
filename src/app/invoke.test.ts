@@ -41,3 +41,11 @@ test("a handler that throws is an isError outcome, not an exception", async () =
   const out = await invokeTool(tool(async () => { throw new Error("boom"); }), { namespace: "x" });
   assert.deepEqual(out, { text: "Error: boom", isError: true });
 });
+
+test("a secret value in a tool result never leaves invokeTool, on any transport", async () => {
+  const out = await invokeTool(
+    tool(async () => ({ args: ["tunnel", "run", "--token", "eyJhIjoiMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAiLCJ0IjoiZmFrZSJ9"] })),
+    { namespace: "default" }
+  );
+  assert.equal(out.text, '{"args":["tunnel","run","--token","[REDACTED]"]}');
+});
