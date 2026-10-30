@@ -1,4 +1,4 @@
-FROM node:24-alpine AS builder
+FROM node:26-alpine AS builder
 
 WORKDIR /app
 
@@ -34,7 +34,7 @@ RUN apk add --no-cache curl && \
     chmod +x /aws_signing_helper
 
 
-FROM node:24-alpine AS runtime
+FROM node:26-alpine AS runtime
 
 WORKDIR /app
 
