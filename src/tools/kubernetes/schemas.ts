@@ -21,4 +21,4 @@ export const blankToUndefined = <T extends z.ZodTypeAny>(schema: T) =>
   // The return type is stated because z.preprocess widens its input to `unknown`, and that
   // widening propagates: without it every OTHER field of the enclosing z.object() infers as
   // unknown too, and the handler stops type-checking its own parsed values.
-  z.preprocess((v) => (v === "" ? undefined : v), schema) as z.ZodType<z.output<T>, z.ZodTypeDef, unknown>;
+  z.preprocess((v) => (v === "" ? undefined : v), schema) as z.ZodType<z.output<T>, unknown>;
