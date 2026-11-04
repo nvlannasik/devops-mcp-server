@@ -1,4 +1,4 @@
-import { rolloutRestart, rolloutUndo, setImage, setResources, scale, deletePod, deleteOrphan, fluxReconcile } from "./handlers/remediation.js";
+import { rolloutRestart, rolloutUndo, setImage, setResources, scale, deletePod, deleteOrphan, fluxReconcile, cordonNode, uncordonNode, drainNode } from "./handlers/remediation.js";
 import type { Tool } from "../types.js";
 import config from "../../config/index.js";
 
@@ -196,6 +196,31 @@ const writeTools: Tool[] = [
       properties: { namespace: NS, name: NAME, kind: KIND, dry_run: DRY },
     },
     handler: fluxReconcile,
+  },
+  // Node actions: cluster-scoped, so ALLOWED_REMEDIATION_NAMESPACES does not apply. Each refuses the
+  // control plane and the cluster's last schedulable node (handlers/remediation/node.ts).
+  {
+    name: "k8s_cordon",
+    description:
+      "[WRITE] Cordon a node: mark it unschedulable so no new pods land there; running pods stay. " +
+      "Refused for a control-plane node and for the cluster's last schedulable node. dry_run=true validates without changing anything.",
+    inputSchema: { type: "object", required: ["node"], properties: { node: { type: "string", description: "Node name" }, dry_run: DRY } },
+    handler: cordonNode,
+  },
+  {
+    name: "k8s_uncordon",
+    description: "[WRITE] Uncordon a node: make a cordoned node schedulable again. dry_run=true validates without changing anything.",
+    inputSchema: { type: "object", required: ["node"], properties: { node: { type: "string", description: "Node name" }, dry_run: DRY } },
+    handler: uncordonNode,
+  },
+  {
+    name: "k8s_drain",
+    description:
+      "[WRITE] Drain a node: cordon it, then evict its pods through the Eviction API (PodDisruptionBudgets apply — a protected pod is reported blocked, never deleted). " +
+      "DaemonSet, static and finished pods stay. Refused for a control-plane node and for the cluster's last schedulable node. " +
+      "dry_run=true sends server-side dry-run evictions and changes nothing.",
+    inputSchema: { type: "object", required: ["node"], properties: { node: { type: "string", description: "Node name" }, dry_run: DRY } },
+    handler: drainNode,
   },
 ];
 

@@ -12,3 +12,4 @@ export * from "./remediation/workload.js";
 export * from "./remediation/rollback.js";
 export * from "./remediation/flux.js";
 export * from "./remediation/orphan.js";
+export * from "./remediation/node.js";
