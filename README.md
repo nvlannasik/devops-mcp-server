@@ -5,7 +5,7 @@ MCP Server for DevOps Observability — integrates with Kubernetes, Prometheus, 
 
 ## Requirements
 
-- Node.js >= 24
+- Node.js 26 (what the images run)
 
 ## Setup
 
@@ -17,9 +17,9 @@ npm run build && npm start     # production
 npm test                       # unit tests
 ```
 
-`npm test` runs `node --import tsx --test 'src/**/*.test.ts'` — Node's built-in test runner (Node >= 24), no extra dependencies. Test files (`*.test.ts`) are excluded from the production build. Covered: tool schemas, every write-tool guardrail (namespace allowlist, GitOps verdict, scale bounds, orphan refusals), the cluster health/inventory scans, pod correlation, find-by-name, rightsizing and the unused scan, the explained-empty Loki/Prometheus answers, the Alertmanager grouping and the tracing adapters, `/mcp` auth and the upstream timeout.
+`npm test` runs `node --import tsx --test 'src/**/*.test.ts'` — Node's built-in test runner (Node >= 24), no extra dependencies. Test files (`*.test.ts`) are excluded from the production build. Covered: tool schemas, every write-tool guardrail (namespace allowlist, GitOps verdict, scale bounds, orphan refusals, node cordon/drain refusals and PDB-blocked evictions), the cluster health/inventory scans, pod correlation, find-by-name, rightsizing and the unused scan, the explained-empty Loki/Prometheus answers, the Alertmanager grouping and the tracing adapters, `/mcp` auth and the upstream timeout.
 
-## Tools (55 read-only + 8 write)
+## Tools (55 read-only + 11 write)
 
 | Domain | Tools | Highlights |
 |---|---|---|
@@ -29,7 +29,7 @@ npm test                       # unit tests
 | Loki | 6 | `loki_query`, `loki_query_range`, labels, streams, stats |
 | Tracing | 3 | `tracing_search`, `tracing_get_trace`, `tracing_list_services` (Tempo or Jaeger) |
 | Capacity | 2 | `k8s_find_unused_resources`, `k8s_recommend_resources` |
-| Write | 8 | Registered only with `MCP_ENABLE_WRITE_TOOLS=true`; dry-run first, namespace allowlist, GitOps guard |
+| Write | 11 | Registered only with `MCP_ENABLE_WRITE_TOOLS=true`; dry-run first, namespace allowlist, GitOps guard; `k8s_cordon`/`k8s_uncordon`/`k8s_drain` for nodes |
 
 Every tool with its description: [docs/TOOLS.md](docs/TOOLS.md).
 
@@ -79,14 +79,19 @@ LOKI_URL=http://loki.monitoring.svc.cluster.local:3100
 ```
 
 Requires a ServiceAccount with ClusterRole (`get`/`list` on all resources), plus the write verbs
-if write tools are enabled. In this workspace it is deployed as part of the umbrella chart
+if write tools are enabled (node `patch` and `pods/eviction` only with the chart's `rbac.allowNodeOps`). In this workspace it is deployed as part of the umbrella chart
 `devops-ai-helm-charts/charts/devops-ai-stack`, which renders that RBAC.
+
+A second cluster runs the same server: reached over the network with `TRANSPORT=http` (the agent's
+`MCP_HTTP_CLUSTERS`), or, when it accepts no inbound traffic, with `TRANSPORT=sqs` (the agent's
+`MCP_SQS_CLUSTERS`) — see [docs/CONFIGURATION.md](docs/CONFIGURATION.md#sqs-bridge-transportsqs).
 
 ## Project Structure
 
 ```
 src/
 ├── app/index.ts              # McpServer, HTTP/stdio transport, graceful shutdown
+├── app/sqs-bridge.ts, sqs-loop.ts  # TRANSPORT=sqs: the same invokeTool behind an SQS queue
 ├── config/index.ts           # Flat env-var config (no env-conditional logic)
 ├── tools/
 │   ├── kubernetes/

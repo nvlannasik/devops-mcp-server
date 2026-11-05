@@ -1,11 +1,11 @@
 # Memory Bank — devops-mcp-server
 
 ## Project Overview
-MCP (Model Context Protocol) server for DevOps observability. Exposes 49 read-only tools callable by AI agents to query Kubernetes, Prometheus, Alertmanager, Loki, and distributed tracing (Tempo/Jaeger).
+MCP (Model Context Protocol) server for DevOps observability. Exposes 55 read-only tools (+11 write tools behind `MCP_ENABLE_WRITE_TOOLS`) callable by AI agents to query Kubernetes, Prometheus, Alertmanager, Loki, and distributed tracing (Tempo/Jaeger).
 
 ## Tech Stack
-- **Runtime:** Node.js >= 24, TypeScript (ESM, `"type": "module"`)
-- **MCP SDK:** `@modelcontextprotocol/sdk` v1.29.0
+- **Runtime:** Node.js 26, TypeScript (ESM, `"type": "module"`)
+- **MCP SDK:** `@modelcontextprotocol/sdk` v1.32.2 (zod 4)
 - **K8s Client:** `@kubernetes/client-node` v1.4.0 (ESM-only, requires Node 18+)
 - **HTTP:** Express v5
 - **Build:** `tsc` → `dist/`, dev via `tsx watch`
@@ -19,12 +19,13 @@ MCP (Model Context Protocol) server for DevOps observability. Exposes 49 read-on
 ## Transport Modes
 - `TRANSPORT=stdio` — default, for local AI clients (Claude Desktop, Cursor)
 - `TRANSPORT=http` — for remote deployment, endpoint `POST /mcp`
+- `TRANSPORT=sqs` — the bridge for a cluster with no inbound traffic: long-polls its request queue, runs the same `invokeTool` (see `CLAUDE.md`)
 - **Bug fix applied:** HTTP mode creates a new `McpServer` per request (stateless) because the SDK does not allow reconnecting to an already-connected server instance
 
-## Tools (51 read-only, 57 with `MCP_ENABLE_WRITE_TOOLS=true`)
+## Tools (55 read-only, 66 with `MCP_ENABLE_WRITE_TOOLS=true`)
 
 Counts verified by importing `src/tools/index.ts` — the tables below list the main ones per
-domain, not every handler. The write tools are the 6 in `kubernetes/write.ts`.
+domain, not every handler. The write tools are the 11 in `kubernetes/write.ts` (the full list: `docs/TOOLS.md`).
 
 ### Kubernetes
 Handlers split per domain under `src/tools/kubernetes/handlers/`:

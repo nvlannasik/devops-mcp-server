@@ -1,4 +1,4 @@
-# Tools (55 read-only + 8 write)
+# Tools (55 read-only + 11 write)
 
 Every tool is discovered by the client through `listTools()`; the agent needs no change when one is
 added. Settings that shape them: [CONFIGURATION.md](CONFIGURATION.md).
@@ -98,10 +98,10 @@ Cost/sizing questions, in `src/tools/capacity/`. `k8s_recommend_resources` is th
 | `k8s_find_unused_resources` | Orphaned/idle objects cluster-wide in one call (the `kor` question): unmounted PVCs, endpoint-less Services, workloads scaled to 0, unreferenced ConfigMaps/Secrets/ServiceAccounts. Three filters guard the claim: references from running pods **and** every workload pod template; `ownerReferences` (operator-*created*); and a match against every custom resource in the cluster (operator-*referenced*, `cross_check_crds`, default on, needs `rbac.readAllCustomResources`). `crossCheck.crdsUnreadable` non-empty ⇒ the cross-check was partial and the note says so. Still a **review** list, never a delete list |
 | `k8s_recommend_resources` | Right-sizing: configured requests/limits vs real usage (CPU p95, peak working set, CFS throttle ratio over `window`, default 24h). Returns the concrete number to change per container plus cluster-wide over-reserved CPU/memory. Flags `oom_risk`, `cpu_throttled`, `*_under_provisioned`, `no_requests`, `over_provisioned`, `no_data` |
 
-## Write tools (8)
+## Write tools (11)
 
-Registered only with `MCP_ENABLE_WRITE_TOOLS=true`, every one supports `dry_run`, and only in
-`ALLOWED_REMEDIATION_NAMESPACES`. In `devops-ai-agent` nothing calls them without a human clicking
+Registered only with `MCP_ENABLE_WRITE_TOOLS=true`, every one supports `dry_run`, and the workload ones only in
+`ALLOWED_REMEDIATION_NAMESPACES` (the node ones are cluster-scoped and carry their own refusals). In `devops-ai-agent` nothing calls them without a human clicking
 *Approve* on a dry-run-validated card.
 
 | Tool | Description |
@@ -114,3 +114,6 @@ Registered only with `MCP_ENABLE_WRITE_TOOLS=true`, every one supports `dry_run`
 | `k8s_delete_pod` | Delete ONE controller-owned pod (its controller recreates it) |
 | `k8s_delete_orphan` | Delete ONE object nothing declares (ConfigMap, Service, ServiceAccount, or a workload already at 0). Returns `backupManifest`, captured immediately before the delete. Never Secrets or PVCs |
 | `flux_reconcile` | Force Flux to re-apply the declared state of a workload's HelmRelease — the fix for drift. Needs `patch` on `helmreleases` |
+| `k8s_cordon` | Mark ONE node unschedulable. Refuses a control-plane node and the cluster's last schedulable node. Cluster-scoped, so no namespace allowlist; needs chart `rbac.allowNodeOps` |
+| `k8s_uncordon` | Make a cordoned node schedulable again. Refuses a node that is already schedulable |
+| `k8s_drain` | Cordon, then evict every pod on the node through the Eviction API, so PodDisruptionBudgets hold: a protected pod comes back `blocked`, never deleted. DaemonSet, static and finished pods are left in place. Same refusals as cordon; the dry run evicts with `dryRun: [All]` |
