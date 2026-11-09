@@ -145,3 +145,6 @@ vite.config.ts.timestamp-*
 .DS_Store
 
 .claude/
+
+# Serena (local code-assistant config/cache)
+.serena/
