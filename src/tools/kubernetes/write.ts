@@ -217,8 +217,10 @@ const writeTools: Tool[] = [
     name: "k8s_drain",
     description:
       "[WRITE] Drain a node: cordon it, then evict its pods through the Eviction API (PodDisruptionBudgets apply — a protected pod is reported blocked, never deleted). " +
-      "DaemonSet, static and finished pods stay. Refused for a control-plane node and for the cluster's last schedulable node. " +
-      "dry_run=true sends server-side dry-run evictions and changes nothing.",
+      "DaemonSet, static and finished pods stay, and so does a pod whose volume exists only on this node (e.g. local-path) — it is reported as pinned, " +
+      "because evicting it would leave it Pending until the node is uncordoned. " +
+      "Refused for a control-plane node, for the cluster's last schedulable node, and when the evicted pods' requests cannot fit on the other schedulable nodes. " +
+      "dry_run=true runs every check, sends server-side dry-run evictions and changes nothing.",
     inputSchema: { type: "object", required: ["node"], properties: { node: { type: "string", description: "Node name" }, dry_run: DRY } },
     handler: drainNode,
   },
