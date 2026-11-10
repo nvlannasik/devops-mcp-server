@@ -33,6 +33,11 @@ test("quantities parse in the units Kubernetes actually writes", () => {
   assert.equal(parseMem("512Mi"), 512 * MiB);
   assert.equal(parseMem("1Gi"), 1024 * MiB);
   assert.equal(parseMem("500M"), 5e8);
+  // Every node's allocatable memory is written in Ki — the regex once rejected the capital K.
+  assert.equal(parseMem("7100476Ki"), 7100476 * 1024);
+  assert.equal(parseMem("1k"), 1000);
+  assert.equal(parseMem("1K"), null);
+  assert.equal(parseMem("1ki"), null);
   assert.equal(parseMem("bogus"), null);
 });
 

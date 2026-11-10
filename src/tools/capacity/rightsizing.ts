@@ -29,10 +29,12 @@ const MEM_UNITS: Record<string, number> = {
   Ki: 1024, Mi: 1024 ** 2, Gi: 1024 ** 3, Ti: 1024 ** 4, Pi: 1024 ** 5, Ei: 1024 ** 6,
 };
 
-// Kubernetes quantity -> bytes. "512Mi", "1Gi", "500M", "1073741824".
+// Kubernetes quantity -> bytes. "512Mi", "1Gi", "500M", "1073741824", "7100476Ki".
+// Binary suffixes are Ki/Mi/Gi/…, decimal ones k/M/G/… — kilo is the one whose case differs, so a
+// `[EPTGMk]i?` class rejected "Ki", which is how every node reports its memory (2026-11-10).
 export function parseMem(q?: string): number | null {
   if (!q) return null;
-  const m = /^(\d+(?:\.\d+)?)([EPTGMk]i?)?$/.exec(q.trim());
+  const m = /^(\d+(?:\.\d+)?)(Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E)?$/.exec(q.trim());
   if (!m) return null;
   const unit = MEM_UNITS[m[2] ?? ""];
   return unit === undefined ? null : Number(m[1]) * unit;
