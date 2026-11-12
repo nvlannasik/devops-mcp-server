@@ -46,7 +46,8 @@ const tools: Tool[] = [
       "USE THIS for 'resource limits', 'requests', 'right-size', 'over-provisioned', 'how much does X actually use', " +
       "and as the Short-term action in any OOMKilled / CPU-throttling / Pending-pod RCA — it produces the concrete " +
       "number to change, so the recommendation is `512Mi -> 900Mi`, not 'consider raising the limit'. " +
-      "Flags: `oom_risk`, `cpu_throttled`, `cpu_under_provisioned`, `memory_under_provisioned`, `no_requests`, " +
+      "Flags: `oom_killed` (the kernel killed it at its limit — the recommended limit is then sized from the LIMIT, " +
+      "because usage read before a kill is capped by it), `oom_risk`, `cpu_throttled`, `cpu_under_provisioned`, `memory_under_provisioned`, `no_requests`, " +
       "`over_provisioned`, `no_data`. " +
       "Read `method` before quoting a number — it is a percentile heuristic over `window`, not a VPA verdict. " +
       "Do NOT use it to find orphaned objects; that is k8s_find_unused_resources.",

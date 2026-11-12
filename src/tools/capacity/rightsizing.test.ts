@@ -8,7 +8,9 @@ import {
   idleWorkloadsOf,
   windowHours,
   usageQueries,
+  markOomKilled,
   IDLE_MIN_WINDOW_HOURS,
+  type OomPod,
   type WorkloadContainer,
 } from "./rightsizing.js";
 
@@ -209,4 +211,78 @@ test("container usage is not summed across the series that carry it", () => {
     assert.doesNotMatch(usage, /sum by \(namespace, pod, container\) \((rate|max_over_time)\(container_(cpu_usage|memory_working)/, usage);
     assert.match(usage, /max by \(namespace, pod, container\)/, usage);
   }
+});
+
+// Bench A02, 2026-11-12: OOMKilled at 128Mi, a 24h peak of 92Mi (the container dies between two
+// scrapes), and a recommendation of 138Mi — which the agent proposed, citing this tool.
+const oomPod = (name: string, limit: string, over: Partial<{ container: string; last: boolean }> = {}): OomPod => ({
+  metadata: { name, namespace: "app" },
+  spec: { containers: [{ name: over.container ?? "api", resources: { limits: { memory: limit } } }] },
+  status: {
+    containerStatuses: [
+      {
+        name: over.container ?? "api",
+        ...(over.last === false
+          ? { state: { terminated: { reason: "OOMKilled" } } }
+          : { lastState: { terminated: { reason: "OOMKilled" } } }),
+      },
+    ],
+  },
+});
+
+test("an OOMKilled container is sized from the limit that killed it, not from the peak read before the kill", () => {
+  const c = container({ memLimit: 128 * MiB, memRequest: 64 * MiB });
+  const [marked] = markOomKilled([c], [oomPod("orders-api-668f55f6d7-svhct", "128Mi")]);
+  assert.equal(marked.oomKilled, true);
+  const r = buildRecommendations([marked], new Map([["app/Deployment/orders-api/api", { memBytes: 92 * MiB, cpuCores: 0.01 }]])).recommendations[0];
+  assert.equal(r.flags[0], "oom_killed");
+  assert.equal(r.recommended!.memoryLimit, "228Mi"); // 128Mi + 100Mi beats 128Mi x 1.2 and 92Mi x 1.5
+  assert.match(String(r.observed.memoryNote), /OOMKilled at its 128Mi limit/);
+});
+
+test("on a large limit the ratio is the bump, and a real peak above it still wins", () => {
+  const c = container({ memLimit: 1024 * MiB, memRequest: 512 * MiB, oomKilled: true });
+  const at = (peak: number) =>
+    buildRecommendations([c], new Map([["app/Deployment/orders-api/api", { memBytes: peak * MiB, cpuCores: 0.1 }]])).recommendations[0].recommended!.memoryLimit;
+  assert.equal(at(700), "1229Mi"); // 1024Mi x 1.2
+  assert.equal(at(1000), "1500Mi"); // 1000Mi x 1.5
+});
+
+test("a container killed before its first scrape still gets a limit to raise to", () => {
+  const c = container({ memLimit: 128 * MiB, oomKilled: true });
+  const r = buildRecommendations([c], new Map()).recommendations[0];
+  assert.deepEqual(r.flags, ["oom_killed", "no_data"]);
+  assert.deepEqual(r.recommended, { memoryLimit: "228Mi" });
+});
+
+test("a kill counts for the container it happened to, at a limit no lower than the current one", () => {
+  const api = container({ memLimit: 512 * MiB });
+  const side = container({ container: "sidecar", memLimit: 64 * MiB });
+  const other = container({ workload: "orders", memLimit: 128 * MiB });
+  const mark = (pods: OomPod[]) => markOomKilled([api, side, other], pods).map((c) => !!c.oomKilled);
+
+  // `orders-api-…` belongs to orders-api, not to orders; the sidecar was not the one killed
+  assert.deepEqual(mark([oomPod("orders-api-7c9d4-x2k", "512Mi")]), [true, false, false]);
+  // currently terminated, not only a previous instance
+  assert.deepEqual(mark([oomPod("orders-api-7c9d4-x2k", "512Mi", { last: false })]), [true, false, false]);
+  // killed at 128Mi, and the limit has since been raised to 512Mi: says nothing about 512Mi
+  assert.deepEqual(mark([oomPod("orders-api-7c9d4-x2k", "128Mi")]), [false, false, false]);
+  // no pod killed: the same array back, nothing copied
+  const same = [api];
+  assert.equal(markOomKilled(same, [{ metadata: { name: "orders-api-1", namespace: "app" }, status: { containerStatuses: [{ name: "api" }] } }]), same);
+});
+
+test("a container that was never killed is sized exactly as before", () => {
+  const c = container({ memLimit: 128 * MiB, memRequest: 64 * MiB });
+  const r = buildRecommendations([c], new Map([["app/Deployment/orders-api/api", { memBytes: 92 * MiB, cpuCores: 0.01 }]])).recommendations[0];
+  assert.equal(r.recommended!.memoryLimit, "138Mi");
+  assert.equal(r.observed.memoryNote, undefined);
+  assert.ok(!r.flags.includes("oom_killed"));
+});
+
+test("a container the kernel keeps killing is never idle, however little CPU it burns between kills", () => {
+  const c = container({ replicas: 1, memLimit: 128 * MiB, oomKilled: true });
+  const out = buildRecommendations([c], usageOf(c, 0.0005), 24);
+  assert.ok(!out.recommendations[0].flags.includes("idle"));
+  assert.deepEqual(out.idleWorkloads, []);
 });

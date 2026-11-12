@@ -58,6 +58,8 @@ export interface WorkloadContainer {
   memRequest: number | null;
   cpuLimit: number | null;
   memLimit: number | null;
+  /** The kernel killed this container at a memory limit no lower than `memLimit` — see markOomKilled. */
+  oomKilled?: boolean;
 }
 
 export interface Usage {
@@ -127,6 +129,81 @@ const THROTTLE_ALERT = 0.05;
 const OOM_MARGIN = 0.9;
 
 /**
+ * What a memory limit is raised to after the kernel killed the container AT it.
+ *
+ * `peak x 1.5` is wrong for exactly this container, and it is the one the number matters most for:
+ * a working set cannot be observed above the limit that kills it, and a container that allocates
+ * fast dies between two scrapes. Bench A02, 2026-11-12: OOMKilled at 128Mi, the 24h peak read 92Mi,
+ * and this tool recommended 138Mi — which the agent proposed, citing the tool.
+ *
+ * So a killed container is sized from the LIMIT, by the Vertical Pod Autoscaler's rule for the same
+ * event (oom-bump-up-ratio 1.2, oom-min-bump-up 100Mi): the larger of the two. It is a first step,
+ * not a measured peak, and `observed.memoryNote` says so.
+ */
+const OOM_BUMP_RATIO = 1.2;
+const OOM_MIN_BUMP_BYTES = 100 * 1024 * 1024;
+export const oomFloor = (memLimit: number): number => Math.max(memLimit * OOM_BUMP_RATIO, memLimit + OOM_MIN_BUMP_BYTES);
+
+export interface OomPod {
+  metadata?: { name?: string; namespace?: string };
+  spec?: { containers?: Array<{ name?: string; resources?: { limits?: Record<string, string> } }> };
+  status?: {
+    containerStatuses?: Array<{
+      name?: string;
+      state?: { terminated?: { reason?: string } };
+      lastState?: { terminated?: { reason?: string } };
+    }>;
+  };
+}
+
+/**
+ * Marks the containers a pod of theirs shows as OOMKilled (current or previous instance), by the
+ * same longest-name-prefix rule `aggregateUsage` maps series with.
+ *
+ * Only a kill at a limit AT LEAST the workload's current one counts. During a rollout that raises
+ * the limit, the old ReplicaSet's pod still carries its kill — at the old, lower limit — and that
+ * says nothing about the new one.
+ *
+ * exported for the test
+ */
+export function markOomKilled(containers: WorkloadContainer[], pods: OomPod[]): WorkloadContainer[] {
+  const killed = new Map<string, Array<number | null>>(); // "ns/pod/container" -> limits it was killed at
+  for (const p of pods) {
+    const ns = p.metadata?.namespace;
+    const pod = p.metadata?.name;
+    if (!ns || !pod) continue;
+    for (const st of p.status?.containerStatuses ?? []) {
+      if (!st.name) continue;
+      if (st.state?.terminated?.reason !== "OOMKilled" && st.lastState?.terminated?.reason !== "OOMKilled") continue;
+      const limit = parseMem(p.spec?.containers?.find((c) => c.name === st.name)?.resources?.limits?.memory);
+      const k = `${ns}/${pod}/${st.name}`;
+      killed.set(k, [...(killed.get(k) ?? []), limit]);
+    }
+  }
+  if (killed.size === 0) return containers;
+
+  const namesByNs = new Map<string, string[]>();
+  for (const c of containers) {
+    const list = namesByNs.get(c.namespace) ?? [];
+    if (!list.includes(c.workload)) list.push(c.workload);
+    namesByNs.set(c.namespace, list);
+  }
+  for (const list of namesByNs.values()) list.sort((a, b) => b.length - a.length);
+
+  const marked = new Set<string>(); // "ns/workload/container"
+  for (const [k, limits] of killed) {
+    const [ns, pod, container] = k.split("/");
+    const workload = (namesByNs.get(ns) ?? []).find((n) => pod === n || pod.startsWith(`${n}-`));
+    if (!workload) continue;
+    for (const c of containers) {
+      if (c.namespace !== ns || c.workload !== workload || c.container !== container || c.memLimit === null) continue;
+      if (limits.some((l) => l === null || l >= c.memLimit!)) marked.add(`${ns}/${workload}/${container}`);
+    }
+  }
+  return containers.map((c) => (marked.has(`${c.namespace}/${c.workload}/${c.container}`) ? { ...c, oomKilled: true } : c));
+}
+
+/**
  * "This workload did no measurable work" — the input the scale-to-zero quarantine needs, and
  * the reason the flag exists at all: the unused scan's workload finding is `replicas === 0`,
  * i.e. ALREADY quarantined, so nothing in this server could name a workload worth quarantining.
@@ -173,6 +250,7 @@ export function windowHours(window: string): number {
 // Flags in the order an on-call cares about them. A container that is BOTH throttled and
 // over-provisioned on memory sorts by its worst flag, not its first.
 const FLAG_RANK = [
+  "oom_killed",
   "oom_risk",
   "cpu_throttled",
   "memory_under_provisioned",
@@ -221,14 +299,30 @@ export function buildRecommendations(
 
     if (c.cpuRequest === null && c.memRequest === null) flags.push("no_requests");
 
+    // Read from the pods, not from Prometheus, so it holds with or without samples.
+    const killedAt = c.oomKilled && c.memLimit !== null ? c.memLimit : null;
+    const memoryNote =
+      killedAt === null
+        ? undefined
+        : `OOMKilled at its ${fmtMem(killedAt)} limit. A working set cannot be observed above the limit that ` +
+          `kills it, so any peak read here understates what the container needs. recommended.memoryLimit is ` +
+          `that limit raised by the larger of x${OOM_BUMP_RATIO} and +${fmtMem(OOM_MIN_BUMP_BYTES)} — a first ` +
+          `step, not a measured peak. If the limit was recently LOWERED, the value it ran on before is the ` +
+          `known-good one.`;
+
     const hasData = u.cpuCores !== undefined || u.memBytes !== undefined;
     if (!hasData) {
       items.push({
         kind: c.kind, namespace: c.namespace, workload: c.workload, container: c.container,
         replicas: c.replicas,
-        flags: [...flags, "no_data"],
+        flags: [...flags, ...(killedAt === null ? [] : ["oom_killed"]), "no_data"],
         current,
-        observed: { note: "no cadvisor samples in the window — scaled to zero, created after the window started, or not scraped" },
+        observed: {
+          note: "no cadvisor samples in the window — scaled to zero, created after the window started, or not scraped",
+          ...(memoryNote && { memoryNote }),
+        },
+        // The one number that needs no sample: a container killed before its first scrape.
+        ...(killedAt !== null && { recommended: { memoryLimit: fmtMem(oomFloor(killedAt)) } }),
       });
       continue;
     }
@@ -238,6 +332,7 @@ export function buildRecommendations(
     const mem = u.memBytes ?? 0;
     const throttle = u.throttleRatio ?? 0;
 
+    if (killedAt !== null) flags.push("oom_killed");
     if (throttle > THROTTLE_ALERT && c.cpuLimit !== null) flags.push("cpu_throttled");
     if (c.memLimit !== null && mem > c.memLimit * OOM_MARGIN) flags.push("oom_risk");
     if (c.cpuRequest !== null && cpu > c.cpuRequest) flags.push("cpu_under_provisioned");
@@ -250,11 +345,12 @@ export function buildRecommendations(
     }
     // `replicas > 0` is load-bearing, not a tidy-up: a workload already at zero is already
     // quarantined, and flagging it would offer to scale it to the number it is at.
-    if (idleEligible && c.replicas > 0 && cpu < IDLE_CPU_CORES) flags.push("idle");
+    // Nor one the kernel keeps killing: between kills it burns no CPU, and it is failing, not idle.
+    if (idleEligible && c.replicas > 0 && cpu < IDLE_CPU_CORES && killedAt === null) flags.push("idle");
 
     const cpuReq = cpu * CPU_HEADROOM;
     const memReq = mem * MEM_HEADROOM;
-    const memLim = mem * MEM_LIMIT_HEADROOM;
+    const memLim = killedAt === null ? mem * MEM_LIMIT_HEADROOM : Math.max(mem * MEM_LIMIT_HEADROOM, oomFloor(killedAt));
     const recommended: Record<string, string> = {
       cpuRequest: fmtCpu(cpuReq),
       memoryRequest: fmtMem(memReq),
@@ -281,6 +377,7 @@ export function buildRecommendations(
         cpuP95: fmtCpu(cpu),
         memoryPeak: fmtMem(mem),
         cpuThrottlePct: Math.round(throttle * 1000) / 10,
+        ...(memoryNote && { memoryNote }),
       },
       recommended,
       savings,
@@ -474,8 +571,16 @@ export const recommendResources = (input: unknown) => {
     const q = usageQueries(s, window);
     const [cpu, mem, throttle] = await Promise.all([vector(q.cpu), vector(q.mem), vector(q.throttle)]);
 
+    // Which containers the kernel killed at their limit. A failed listing marks nothing: the
+    // recommendation is then today's, never an error.
+    const core = getApi(k8s.CoreV1Api);
+    const pods = await listAll<OomPod>(
+      (o) => (namespace ? core.listNamespacedPod({ namespace, ...o }) : core.listPodForAllNamespaces(o)) as never
+    ).catch(() => ({ items: [] as OomPod[] }));
+    const sized = markOomKilled(containers, pods.items);
+
     const hours = windowHours(window);
-    const built = buildRecommendations(containers, aggregateUsage(containers, { cpu, mem, throttle }), hours);
+    const built = buildRecommendations(sized, aggregateUsage(sized, { cpu, mem, throttle }), hours);
 
     return {
       window,
@@ -483,6 +588,9 @@ export const recommendResources = (input: unknown) => {
       method:
         `CPU request = p95 of a 5m rate over ${window}, x${CPU_HEADROOM}. Memory request = peak working set x${MEM_HEADROOM}, ` +
         `memory limit = peak x${MEM_LIMIT_HEADROOM}. Per container, taking the busiest replica. ` +
+        `A container flagged \`oom_killed\` is the exception: its peak is capped by the limit that killed it, so ` +
+        `its memory limit is the CURRENT limit raised by the larger of x${OOM_BUMP_RATIO} and +${fmtMem(OOM_MIN_BUMP_BYTES)}, ` +
+        `never less — see its \`observed.memoryNote\`. ` +
         `This is a percentile heuristic, NOT VPA: it has no seasonality model, so a workload whose real peak ` +
         `falls outside ${window} will be sized too small — widen \`window\` before acting on a surprisingly low number. ` +
         `A CPU limit is only ever raised, never introduced.` +
