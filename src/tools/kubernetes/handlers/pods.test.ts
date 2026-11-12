@@ -22,6 +22,24 @@ test("a value found nowhere lists the keys in use, and an empty namespace says s
   assert.match(selectorMissNote("empty-ns", "app=x", []), /no pod at all/);
 });
 
+// Bench C06: "check the logs for api" — three Deployments whose `app` values all contain "api".
+const c06 = ["api-gateway", "payments-api", "api-worker"].flatMap((app) =>
+  Array.from({ length: 4 }, (_, i) => ({ app, "pod-template-hash": `${app}-h${i}` }))
+);
+
+test("a shortened name lists the label values that contain it, and says the name is ambiguous", () => {
+  const note = selectorMissNote("bench-c06", "app=api", c06);
+  assert.match(note, /matches `app=api` exactly, but 3 label value\(s\) contain it/);
+  assert.match(note, /`app=api-gateway` \(4 pod\(s\)\), `app=payments-api` \(4 pod\(s\)\), `app=api-worker` \(4 pod\(s\)\)/);
+  assert.match(note, /ambiguous/);
+  // per-pod keys are never candidates, though every hash above contains "api"
+  assert.doesNotMatch(note, /pod-template-hash/);
+  // the selector's key may be wrong too: a name key is still searched
+  assert.match(selectorMissNote("sample-apps", "name=checkout", sampleApps), /`app\.kubernetes\.io\/name=checkout-gateway` \(1 pod\(s\)\)\. It is a candidate, not a match/);
+  // one letter matches everything and says nothing
+  assert.match(selectorMissNote("bench-c06", "app=a", c06), /no pod there carries that value/);
+});
+
 test("a set-based or existence selector does not crash the note", () => {
   assert.match(selectorMissNote("sample-apps", "app in (a,b),tier", sampleApps), /label keys in use/);
 });

@@ -5,6 +5,10 @@ import { NS, NSLabel, blankToUndefined } from "../schemas.js";
 import config from "../../../config/index.js";
 
 const LIST_TIMEOUT_SEC = Math.ceil(config.upstreamTimeoutMs / 1000);
+/** Labels unique to one pod or one revision: every value contains the workload's name, so they are never a candidate. */
+const PER_POD_KEYS = new Set(["pod-template-hash", "controller-revision-hash", "statefulset.kubernetes.io/pod-name", "apps.kubernetes.io/pod-index"]);
+/** Keys that name a workload, searched for a partial value even when the selector used another key. */
+const NAME_KEYS = new Set(["app", "app.kubernetes.io/name", "app.kubernetes.io/instance", "k8s-app"]);
 
 /**
  * Why a label selector matched no pod, for the one case worth an extra read: the value exists in
@@ -27,6 +31,33 @@ export function selectorMissNote(namespace: string, selector: string, labelSets:
   if (hits.size > 0) {
     const found = [...hits].map(([kv, n]) => `\`${kv}\` (${n} pod(s))`).join(", ");
     return `no pod in \`${namespace}\` matches \`${selector}\`, but pods there carry ${found} — use that as label_selector.`;
+  }
+  // A name the person shortened: "logs for api" is `app=api`, and the pods are `app=api-gateway`,
+  // `app=payments-api`, `app=api-worker`. Bench C06, 2026-11-12: with only "no pod carries that
+  // value" to go on, a two-round mention answered without a single real name — once inventing pod
+  // names, once handing back a kubectl command. The values that CONTAIN it are the candidates.
+  const partial = new Map<string, number>();
+  for (const [key, value] of terms) {
+    const want = value.trim().toLowerCase();
+    if (want.length < 2) continue;
+    for (const labels of labelSets) {
+      for (const [k, v] of Object.entries(labels)) {
+        if (PER_POD_KEYS.has(k) || v.toLowerCase() === want || !v.toLowerCase().includes(want)) continue;
+        if (k !== key.trim() && !NAME_KEYS.has(k)) continue;
+        partial.set(`${k}=${v}`, (partial.get(`${k}=${v}`) ?? 0) + 1);
+      }
+    }
+  }
+  if (partial.size > 0) {
+    const found = [...partial].slice(0, 8).map(([kv, n]) => `\`${kv}\` (${n} pod(s))`).join(", ");
+    const more = partial.size > 8 ? ` and ${partial.size - 8} more` : "";
+    return (
+      `no pod in \`${namespace}\` matches \`${selector}\` exactly, but ${partial.size} label value(s) contain it: ` +
+      `${found}${more}. ` +
+      (partial.size > 1
+        ? "The name is ambiguous — these are the candidates; ask which one is meant rather than reading them all."
+        : "It is a candidate, not a match — say which object it is before treating it as the one asked about.")
+    );
   }
   const keys = [...new Set(labelSets.flatMap((l) => Object.keys(l)))].sort().slice(0, 8);
   return (
