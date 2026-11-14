@@ -72,7 +72,10 @@ const tools: Tool[] = [
   },
   {
     name: "k8s_list_nodes",
-    description: "List all nodes with status, roles, and resource capacity",
+    description:
+      "List all nodes: Ready status, `unschedulable` (true = the node is CORDONED), taints, pressure conditions that are true " +
+      "(MemoryPressure/DiskPressure/PIDPressure), roles and capacity. A pod Pending on `untolerated taint {node.kubernetes.io/unschedulable}` " +
+      "is waiting on a cordoned node — not on a missing toleration.",
     inputSchema: { type: "object", properties: {} },
     handler: h.listNodes,
   },
