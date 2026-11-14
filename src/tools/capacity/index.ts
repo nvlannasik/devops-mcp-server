@@ -1,5 +1,6 @@
 import { findUnusedResources } from "./unused.js";
 import { recommendResources } from "./rightsizing.js";
+import { nodePods } from "./node-pods.js";
 import type { Tool } from "../types.js";
 
 // Named `k8s_*` although the module is `capacity/`: the model reaches for these next to the
@@ -60,6 +61,21 @@ const tools: Tool[] = [
       },
     },
     handler: recommendResources,
+  },
+  {
+    name: "k8s_node_pods",
+    description:
+      "Everything on ONE node and what it uses: every pod on it (all namespaces) with QoS class, ready/restarts, " +
+      "requests/limits and LIVE memory working set (busiest first); the node's allocated requests vs allocatable; and " +
+      "its real memory and root-disk usage from node-exporter. USE THIS for any node incident — MemoryPressure, " +
+      "DiskPressure, evictions, NotReady, 'why is worker-x full', 'which pod is eating memory on node X' — and before " +
+      "proposing a cordon or drain. Requests are promises, working set is usage: report both.",
+    inputSchema: {
+      type: "object",
+      required: ["name"],
+      properties: { name: { type: "string", description: "Node name, as k8s_list_nodes reports it" } },
+    },
+    handler: nodePods,
   },
 ];
 
