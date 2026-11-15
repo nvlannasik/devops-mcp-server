@@ -48,3 +48,10 @@ test("references to secrets — what the agent reasons about — are kept", () =
   assert.deepEqual(value, input);
   assert.equal(hits, 0);
 });
+
+// 2026-11-15: every Date the Kubernetes client returned reached the agent as `{}`.
+test("a Date passes through as its ISO string, at any depth; an invalid one as null", () => {
+  const at = new Date("2026-11-15T02:03:26Z");
+  const { value } = redactSecrets({ at, events: [{ lastTime: at }], bad: new Date("nope") });
+  assert.deepEqual(JSON.parse(JSON.stringify(value)), { at: "2026-11-15T02:03:26.000Z", events: [{ lastTime: "2026-11-15T02:03:26.000Z" }], bad: null });
+});

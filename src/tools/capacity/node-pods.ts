@@ -37,12 +37,19 @@ export interface PodLike {
     qosClass?: string;
     reason?: string;
     message?: string;
-    conditions?: Array<{ type?: string; reason?: string; lastTransitionTime?: string }>;
+    conditions?: Array<{ type?: string; reason?: string; lastTransitionTime?: string | Date }>;
     containerStatuses?: Array<{ ready?: boolean; restartCount?: number }>;
   };
 }
 
 const MAX_EVICTED = 15;
+
+// The client returns a Date; a fixture or another client a string. ISO either way, so the sort below
+// compares instants and not `Date.toString()`'s weekday-first text.
+const isoOf = (v: unknown): string | null => {
+  const d = v instanceof Date ? v : typeof v === "string" ? new Date(v) : null;
+  return d && !Number.isNaN(d.getTime()) ? d.toISOString() : null;
+};
 
 /**
  * Pods the kubelet evicted from this node, newest first, with its own message — which names the
@@ -61,7 +68,7 @@ export function evictedOf(pods: PodLike[]) {
       namespace: p.metadata?.namespace,
       pod: p.metadata?.name,
       qos: p.status?.qosClass,
-      at: p.status?.conditions?.find((c) => c.type === "DisruptionTarget")?.lastTransitionTime ?? null,
+      at: isoOf(p.status?.conditions?.find((c) => c.type === "DisruptionTarget")?.lastTransitionTime),
       message: (p.status?.message ?? "").slice(0, 300),
     }))
     .sort((a, b) => String(b.at ?? "").localeCompare(String(a.at ?? "")))

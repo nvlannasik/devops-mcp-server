@@ -52,6 +52,12 @@ export function redactSecrets<T>(input: T): { value: T; hits: number } {
   // A container's args put the value in the element after a bare `--token`, so arrays read pairwise.
   const walk = (v: unknown): unknown => {
     if (typeof v === "string") return text(v);
+    // Before the object branch: a Date has no own enumerable keys, so walking it as an object
+    // returned `{}`. The Kubernetes client hands back Dates for every date-time field, and from
+    // 2026-10-28 (when this walker landed) until 2026-11-15 every such timestamp reached the agent
+    // as `{}` — event times, container start and finish, node age, eviction time. Found when
+    // k8s_node_pods printed an eviction at "[object Object]".
+    if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v.toISOString();
     if (Array.isArray(v)) {
       return v.map((x, i) => {
         const prev = v[i - 1];

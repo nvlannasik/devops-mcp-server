@@ -58,3 +58,13 @@ test("evicted pods are listed newest first with the kubelet's message, and stay 
   assert.equal(out.evicted[0].qos, "BestEffort");
   assert.deepEqual(evictedOf([pod("a", "fine")]), []);
 });
+
+test("eviction times from the client's Date objects come out as ISO and sort by instant", () => {
+  const ev = (name: string, at: Date): PodLike => ({
+    metadata: { namespace: "m", name },
+    status: { phase: "Failed", reason: "Evicted", message: "low on memory", conditions: [{ type: "DisruptionTarget", lastTransitionTime: at }] },
+  });
+  // weekday-first text would sort "Wed" after "Sun" — the instants say otherwise
+  const out = evictedOf([ev("earlier", new Date("2026-11-11T00:00:00Z")), ev("later", new Date("2026-11-15T00:00:00Z"))]);
+  assert.deepEqual(out.map((e) => [e.pod, e.at]), [["later", "2026-11-15T00:00:00.000Z"], ["earlier", "2026-11-11T00:00:00.000Z"]]);
+});
