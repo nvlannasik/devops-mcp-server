@@ -32,7 +32,40 @@ const pct = (part: number, whole: number | null) => (whole ? Math.round((part / 
 export interface PodLike {
   metadata?: { name?: string; namespace?: string };
   spec?: { containers?: Array<{ resources?: { requests?: Record<string, string>; limits?: Record<string, string> } }> };
-  status?: { phase?: string; qosClass?: string; containerStatuses?: Array<{ ready?: boolean; restartCount?: number }> };
+  status?: {
+    phase?: string;
+    qosClass?: string;
+    reason?: string;
+    message?: string;
+    conditions?: Array<{ type?: string; reason?: string; lastTransitionTime?: string }>;
+    containerStatuses?: Array<{ ready?: boolean; restartCount?: number }>;
+  };
+}
+
+const MAX_EVICTED = 15;
+
+/**
+ * Pods the kubelet evicted from this node, newest first, with its own message — which names the
+ * resource, the threshold and what the pod was using against its request. Production, 2026-11-14:
+ * `master3-vm` under MemoryPressure, an RCA that said "the eviction victim is not visible from the
+ * evidence", and two `KubernetesPodNotHealthy` alerts firing beside it for the victims — node-exporter
+ * and metallb's speaker, both evicted from that node. They are phase `Failed`, which the pod list
+ * leaves out, so they had nowhere to appear.
+ *
+ * exported for the test
+ */
+export function evictedOf(pods: PodLike[]) {
+  return pods
+    .filter((p) => p.status?.phase === "Failed" && p.status?.reason === "Evicted")
+    .map((p) => ({
+      namespace: p.metadata?.namespace,
+      pod: p.metadata?.name,
+      qos: p.status?.qosClass,
+      at: p.status?.conditions?.find((c) => c.type === "DisruptionTarget")?.lastTransitionTime ?? null,
+      message: (p.status?.message ?? "").slice(0, 300),
+    }))
+    .sort((a, b) => String(b.at ?? "").localeCompare(String(a.at ?? "")))
+    .slice(0, MAX_EVICTED);
 }
 
 export interface NodeUsage {
@@ -112,6 +145,8 @@ export function buildNodePods(
       ...(usage.unavailable?.length ? { unavailable: usage.unavailable } : {}),
     },
     podsTotal: rows.length,
+    // The victims, which the pod list below leaves out (phase Failed). Not the cause: see `note`.
+    evicted: evictedOf(pods),
     // Busiest first by working set, then by memory request for pods with no sample.
     pods: rows.slice(0, MAX_PODS).map(({ _ws, _cpu, _memReq, _memLim, ...r }) => r),
     note:

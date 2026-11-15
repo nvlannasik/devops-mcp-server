@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildNodePods, type PodLike } from "./node-pods.js";
+import { buildNodePods, evictedOf, type PodLike } from "./node-pods.js";
 
 const MiB = 1048576;
 const pod = (ns: string, name: string, over: { qos?: string; req?: string; lim?: string; cpu?: string; phase?: string; restarts?: number } = {}): PodLike => ({
@@ -37,4 +37,24 @@ test("a failed usage read is null and named, never zero", () => {
   assert.equal(out.usage.memoryUsedPct, null);
   assert.deepEqual(out.usage.unavailable, ["memoryTotal", "podWorkingSet"]);
   assert.equal(out.pods[0].memoryWorkingSet, null);
+});
+
+// Production, 2026-11-14: master3-vm under MemoryPressure, and the RCA could not name the victims.
+test("evicted pods are listed newest first with the kubelet's message, and stay out of the live pod list", () => {
+  const evicted = (name: string, at: string, msg: string): PodLike => ({
+    metadata: { namespace: "monitoring", name },
+    status: { phase: "Failed", reason: "Evicted", qosClass: "BestEffort", message: msg, conditions: [{ type: "DisruptionTarget", reason: "TerminationByKubelet", lastTransitionTime: at }] },
+  });
+  const pods = [
+    pod("kube-system", "kube-apiserver-master3-vm", { req: "250Mi" }),
+    evicted("node-exporter-fnr5x", "2026-11-15T02:03:26Z", "The node was low on resource: memory. Container node-exporter was using 23356Ki, request is 0"),
+    evicted("speaker-vt4p2", "2026-11-15T02:05:22Z", "The node was low on resource: memory. Container speaker was using 10860Ki, request is 0"),
+    { metadata: { namespace: "a", name: "crashed" }, status: { phase: "Failed", reason: "Error" } },
+  ];
+  const out = buildNodePods(node, pods, {});
+  assert.deepEqual(out.pods.map((p) => p.pod), ["kube-apiserver-master3-vm"]);
+  assert.deepEqual(out.evicted.map((e) => e.pod), ["speaker-vt4p2", "node-exporter-fnr5x"]);
+  assert.match(out.evicted[0].message, /low on resource: memory/);
+  assert.equal(out.evicted[0].qos, "BestEffort");
+  assert.deepEqual(evictedOf([pod("a", "fine")]), []);
 });
