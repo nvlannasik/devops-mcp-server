@@ -125,6 +125,9 @@ export function buildNodePods(
   rows.sort((a, b) => b._ws - a._ws || b._memReq - a._memReq);
 
   const memUsed = usage.memoryTotal && usage.memoryAvailable !== null && usage.memoryAvailable !== undefined ? usage.memoryTotal - usage.memoryAvailable : null;
+  // Sum over the live pods with a sample; null when no sample came back at all (never zero).
+  const sampled = rows.filter((r) => r._ws >= 0);
+  const podsWs = sampled.length ? sum(sampled.map((r) => r._ws)) : null;
   const fsUsed = usage.rootFsSize && usage.rootFsAvailable !== null && usage.rootFsAvailable !== undefined ? usage.rootFsSize - usage.rootFsAvailable : null;
   const cpuRequests = sum(rows.map((r) => r._cpu));
   const memRequests = sum(rows.map((r) => r._memReq));
@@ -145,7 +148,13 @@ export function buildNodePods(
     usage: {
       memoryTotal: mi(usage.memoryTotal),
       memoryAvailable: mi(usage.memoryAvailable),
+      // Stated, not left to subtraction: a small model read memoryTotal as the usage (2026-11-17).
+      memoryUsed: mi(memUsed),
       memoryUsedPct: memUsed === null ? null : pct(memUsed, usage.memoryTotal!),
+      // The kubelet's SECOND MemoryPressure signal: pods within the eviction threshold of
+      // allocatable, whatever is free on the host (master2-vm 2026-11-18: 94Mi left, ~400Mi free).
+      podsWorkingSet: mi(podsWs),
+      podsHeadroom: podsWs === null || !allocMem ? null : mi(allocMem - podsWs),
       rootFsSize: usage.rootFsSize ? `${(usage.rootFsSize / 1073741824).toFixed(1)}Gi` : null,
       rootFsAvailable: usage.rootFsAvailable !== null && usage.rootFsAvailable !== undefined ? `${(usage.rootFsAvailable / 1073741824).toFixed(1)}Gi` : null,
       rootFsUsedPct: fsUsed === null ? null : pct(fsUsed, usage.rootFsSize!),

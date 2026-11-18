@@ -23,6 +23,10 @@ test("pods are ordered by live working set, and the hog is named even when its r
   assert.equal(out.pods[2].memoryWorkingSet, null);
   assert.equal(out.pods[2].memoryLimit, "none");
   assert.equal(out.usage.memoryUsedPct, 59.3);
+  assert.equal(out.usage.memoryUsed, "1168Mi");
+  // pods' working set against allocatable — the pod-allocatable MemoryPressure signal
+  assert.equal(out.usage.podsWorkingSet, "449Mi");
+  assert.equal(out.usage.podsHeadroom, "1451Mi");
 });
 
 test("allocated is what the scheduler promised; usage is what is used; finished pods count for neither", () => {
@@ -35,6 +39,9 @@ test("a failed usage read is null and named, never zero", () => {
   const out = buildNodePods(node, [pod("a", "x")], { unavailable: ["memoryTotal", "podWorkingSet"] });
   assert.equal(out.usage.memoryTotal, null);
   assert.equal(out.usage.memoryUsedPct, null);
+  assert.equal(out.usage.memoryUsed, null);
+  assert.equal(out.usage.podsWorkingSet, null);
+  assert.equal(out.usage.podsHeadroom, null);
   assert.deepEqual(out.usage.unavailable, ["memoryTotal", "podWorkingSet"]);
   assert.equal(out.pods[0].memoryWorkingSet, null);
 });
